@@ -217,19 +217,59 @@ def fetch_task(task_id: str) -> dict:
     return task
 
 
+def analyze_reload_delete(task: dict) -> dict:
+    """Keep file IDs scoped to the action that introduces them."""
+    action_pattern = re.compile(
+        r"\b(reload|reprocess|retry|rerun|re-run|replace[\s-]+blob|"
+        r"delete|deletion|remove)\b",
+        re.IGNORECASE,
+    )
+    groups = {"reload": [], "delete": []}
+    for text in (task["title"], task["description"]):
+        actions = list(action_pattern.finditer(text))
+        for index, action in enumerate(actions):
+            end = actions[index + 1].start() if index + 1 < len(actions) else len(text)
+            section = text[action.end():end]
+            operation = (
+                "delete" if action.group().lower() in {"delete", "deletion", "remove"}
+                else "reload"
+            )
+            ids = extract_task(task["task_id"], {"description": section})["file_ids"]
+            groups[operation].extend(ids)
+
+    groups = {operation: list(dict.fromkeys(ids)) for operation, ids in groups.items()}
+    if not all(groups.values()):
+        raise ValueError(
+            "Combined reload/delete requests need file IDs after each operation. "
+            "Use 'Reload File IDs: ...' and 'Delete File IDs: ...' in the task."
+        )
+    if set(groups["reload"]) & set(groups["delete"]):
+        raise ValueError("Combined reload/delete requests cannot use the same file ID for both operations")
+    if set(task["file_ids"]) != set(groups["reload"]) | set(groups["delete"]):
+        raise ValueError(
+            "Some file IDs could not be assigned to reload or delete. "
+            "List every file ID after its operation in the task."
+        )
+    return {
+        "operation": "reload-delete",
+        "file_ids_by_operation": groups,
+        "rename_to": "",
+        "request_details": (
+            "For Reload / BLOB Update"
+            if re.search(r"\breplace[\s-]+blob\b", f"{task['title']}\n{task['description']}", re.IGNORECASE)
+            else "For Reload"
+        ),
+        "rationale": "Matched reload and delete instructions with separate file ID lists.",
+        "analyzer": "hardcoded",
+    }
+
+
 def analyze_task_hardcoded(task: dict) -> dict:
     """Classify supported operations without an external model."""
     title_words = [token.lower() for token in text_tokens(task["title"])]
     description_words = [token.lower() for token in text_tokens(task["description"])]
     has_rename_pair = bool(task["rename_from"] and task["rename_to"])
-    title_pair = extract_rename_pair(task["title"])
-    description_pair = extract_rename_pair(description)
-    title_has_rename_pair = bool(title_pair[0] and title_pair[1])
-    description_has_rename_pair = bool(description_pair[0] and description_pair[1])
-    rename_trigger = (
-        r"\b(rename|renamed|change\s+filename|update\s+file\s+name|"
-        r"update\s+filename)\b"
-    )
+    source_text = f"{task['title']}\n{task['description']}"
 
     def has_phrase(words: list[str], phrase: tuple[str, ...]) -> bool:
         phrase_words = list(phrase)
@@ -240,6 +280,12 @@ def analyze_task_hardcoded(task: dict) -> dict:
 
     def has_reload(words: list[str]) -> bool:
         return has_any(words, {"reload", "reprocess", "retry", "rerun"}) or has_phrase(words, ("re", "-", "run"))
+
+    all_words = title_words + description_words
+    if has_any(all_words, {"delete", "deletion", "remove"}) and (
+        has_reload(all_words) or has_phrase(all_words, ("replace", "blob"))
+    ):
+        return analyze_reload_delete(task)
 
     if has_any(title_words, {"delete", "deletion", "remove"}):
         operation = "delete"
@@ -283,6 +329,10 @@ def analyze_task_hardcoded(task: dict) -> dict:
 
 def analyze_task(task: dict, operation: str | None = None) -> dict:
     """Select an explicit operation or analyze the Teamwork task."""
+    if operation == "reload-delete":
+        analysis = analyze_reload_delete(task)
+        analysis["analyzer"] = "explicit flag"
+        return analysis
     if operation:
         return {
             "operation": "reload" if operation == "replace-blob" else operation,
@@ -302,7 +352,7 @@ def analyze_task(task: dict, operation: str | None = None) -> dict:
     # Strong local filename triggers must remain deterministic even when Qwen
     # is configured. Qwen is still used for wording not covered by these rules.
     local_analysis = analyze_task_hardcoded(task)
-    if local_analysis["operation"] == "rename":
+    if local_analysis["operation"] in {"rename", "reload-delete"}:
         return local_analysis
     if not QWEN_API_KEY:
         return local_analysis
@@ -511,7 +561,7 @@ def detect_ai_adapter(task: dict) -> dict:
     """Use the feed control commandline to identify AI-adapter reloads."""
     task = dict(task)
     task["is_ai_adapter"] = False
-    if task["operation"] != "reload":
+    if task["operation"] not in {"reload", "reload-delete"}:
         return task
 
     try:
@@ -642,6 +692,19 @@ def choose_delete_mode() -> str:
 
 
 def render_reference_template(task: dict) -> str:
+    if task["operation"] == "reload-delete":
+        requests = []
+        for operation in ("reload", "delete"):
+            operation_task = {
+                **task,
+                "operation": operation,
+                "file_ids": task["file_ids_by_operation"][operation],
+            }
+            requests.append(
+                f"## {operation.capitalize()}\n\n"
+                f"{render_reference_template(operation_task)}"
+            )
+        return "\n\n".join(requests)
     template_name = (
         f"delete{choose_delete_mode()}.txt" if task["operation"] == "delete" else f"{task['operation']}.txt"
     )
@@ -658,7 +721,7 @@ def render_reference_template(task: dict) -> str:
     }
     for placeholder, value in replacements.items():
         template = template.replace(placeholder, value)
-    return template
+    return f"```sql\n{template.strip()}\n```"
 
 
 def render_issue_body(task: dict, request_text: str) -> str:
@@ -717,7 +780,7 @@ def main() -> int:
     operation_group = parser.add_mutually_exclusive_group()
     operation_group.add_argument(
         "--operation",
-        choices=("reload", "delete", "rename", "replace-blob"),
+        choices=("reload", "delete", "rename", "replace-blob", "reload-delete"),
         help="Use this operation instead of analyzing the Teamwork task",
     )
     operation_group.add_argument(
@@ -733,6 +796,13 @@ def main() -> int:
         action="store_const",
         const="delete",
         help="Force delete operation",
+    )
+    operation_group.add_argument(
+        "--reload-delete",
+        dest="operation",
+        action="store_const",
+        const="reload-delete",
+        help="Render reload and delete instructions with separate file ID lists",
     )
     operation_group.add_argument(
         "--rename",
@@ -773,6 +843,9 @@ def main() -> int:
         print(f"Feed ID: {task['feed_id']}")
         print(f"Adapter ID: {task['adapter_id']}")
         print(f"File IDs: {', '.join(task['file_ids'])}")
+        if task["operation"] == "reload-delete":
+            for operation, file_ids in task["file_ids_by_operation"].items():
+                print(f"{operation.capitalize()} File IDs: {', '.join(file_ids)}")
         print(f"AI Adapter: {'yes' if task.get('is_ai_adapter') else 'no'}")
         print(f"Table: {detail_table_name(task['adapter_id'])}")
         if task["operation"] == "rename":

@@ -214,6 +214,41 @@ Delete mode: choose 1 (delete1.txt) or 2 (delete2.txt):
 
 Enter `1` or `2`, then let the command finish.
 
+### Combined reload and delete requests
+
+A single task can request both operations for different files:
+
+```text
+Feed ID: 652
+Adapter ID: 652
+Please reload File ID 2686743.
+Please remove File IDs 2038976, 2038977, 2038975.
+```
+
+Run `paste-tw` normally; combined requests are detected locally, even when Qwen
+is configured. The script creates **one GitHub issue**, with a reload section
+for `2686743` and a delete section for `2038976,2038977,2038975`. It still asks
+for delete mode `1` or `2`, and the reload section still uses the read-only
+AI-adapter lookup and the appropriate reload template.
+
+Each operation has its own heading and fenced `sql` code block, so reload and
+delete instructions are displayed separately rather than inside one shared
+block. Single-operation requests retain one `sql` code block.
+
+To explicitly select combined handling, use:
+
+```bash
+./paste-tw "https://objectbright.teamwork.com/app/tasks/27311849" --reload-delete
+```
+
+`--operation reload-delete` is equivalent. List file IDs after each action,
+using `Reload File IDs: ...` and `Delete File IDs: ...` headers or sentences
+like the example above. Each section supports the same file ID formats as a
+single-operation task. The script stops if a section has no file IDs, any ID
+cannot be assigned to an action, or the same ID appears in both groups.
+`--fileid` is not supported for combined requests. The usual `SQL Request`
+tag is added once; a combined replace-blob/delete request also gets `BLOB Update`.
+
 ### 5. Open the created GitHub issue
 
 When successful, the command prints the created issue URL:
@@ -309,7 +344,9 @@ are `--reload`, `--delete`, `--rename`, and `--replace-blob`; the last one uses
 the reload template for replacing a blob. If no flag is supplied, the script
 analyzes the fetched Teamwork title and description.
 
-If `QWEN_API_KEY` is configured, Qwen classifies the task. Qwen must return one of:
+Combined reload/delete requests are handled locally first so Qwen cannot collapse
+them into one operation or combine their file IDs. For other requests, if
+`QWEN_API_KEY` is configured, Qwen classifies the task. Qwen must return one of:
 
 - `reload` for replacing or reprocessing a blob
 - `rename` for changing a filename

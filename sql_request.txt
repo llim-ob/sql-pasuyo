@@ -16,6 +16,4 @@
 
 # SQL
 
-```sql
 {the sql generated from python script}
-```
