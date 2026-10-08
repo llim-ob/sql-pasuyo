@@ -29,7 +29,7 @@ def detail_table_name(adapter_id: str) -> str:
     """Return the detail table name for an adapter ID."""
     adapter_number = int(adapter_id)
     if adapter_number >= 600:
-        return f"eps_detail_type_{adapter_number}"
+        return f"eps_detail_type{adapter_number}"
     return f"ecs_detail_type{adapter_number}"
 
 

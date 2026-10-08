@@ -117,7 +117,7 @@ It stops with a configuration error if the client libraries cannot be loaded.
 The script also reads `feedId`, `adapterId`, and `fileIds` when those values are present in the Teamwork API response.
 Before creating the issue, it prints the detail table derived from the adapter ID directly below the extracted File IDs.
 Adapters below 600 use `ecs_detail_type<adapterId>`; adapters 600 and above use
-`eps_detail_type_<adapterId>`.
+`eps_detail_type<adapterId>`.
 
 For reload requests, the script also performs a read-only lookup in
 `carrier_feed_control` using the extracted feed ID. It examines Python
