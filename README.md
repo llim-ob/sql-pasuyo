@@ -165,6 +165,12 @@ Force an operation with a flag when the request wording is already known:
 ./paste-tw "https://objectbright.teamwork.com/app/tasks/27261684" --replace-blob --fileid 2756788
 ./paste-tw "https://objectbright.teamwork.com/app/tasks/27261684" --reload --2756788
 ./paste-tw "https://objectbright.teamwork.com/app/tasks/27261684" --replace-blob --2756788
+
+# Override IDs when the Teamwork task does not contain them
+./paste-tw "https://objectbright.teamwork.com/app/tasks/27261684" \
+  --feed 396 --adapter 396 --fileid 2756788 --replace-blob
+./paste-tw "https://objectbright.teamwork.com/app/tasks/27261684" \
+  --feed396 --adapter396 --2756788 --replace-blob
 ```
 
 `--replace-blob` uses the existing reload template. `--rename` is also
@@ -175,7 +181,12 @@ is `--operation reload`, `--operation delete`, `--operation rename`, or
 any file IDs extracted from the Teamwork task. The shorthand `--FILE_ID` is
 also supported immediately after the operation flag, for example
 `--reload --2756788` or `--replace-blob --2756788`. With the generic form,
-use `--operation reload --2756788`.
+use `--operation reload --2756788`. `--feed FEED_ID` and `--adapter ADAPTER_ID`
+override the corresponding values extracted from the Teamwork task; `--feedid`
+and `--adapterid` are aliases. Compact forms such as `--feed396`,
+`--adapter396`, and `--2756788` are also supported. Feed and adapter overrides
+can be used with any operation, but a file override still requires `--reload`
+or `--replace-blob`.
 
 If no operation flag is provided, the script fetches and analyzes the Teamwork
 task using Qwen when configured, or local rules otherwise:

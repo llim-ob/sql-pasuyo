@@ -33,6 +33,30 @@ def detail_table_name(adapter_id: str) -> str:
     return f"ecs_detail_type{adapter_number}"
 
 
+def normalize_compact_arguments(arguments: list[str]) -> list[str]:
+    """Expand compact ID flags before argparse processes the command line.
+
+    The launcher has historically documented ``--2756788`` as a shorthand for
+    ``--fileid 2756788``. The same compact form is useful when forcing the IDs
+    needed by a task, for example ``--feed396`` and ``--adapter396``.
+    """
+    normalized = []
+    for argument in arguments:
+        match = re.fullmatch(r"--(feed|feedid|adapter|adapterid)(\d+)", argument, re.IGNORECASE)
+        if match:
+            option = "--feed" if match.group(1).lower().startswith("feed") else "--adapter"
+            normalized.extend((option, match.group(2)))
+            continue
+
+        match = re.fullmatch(r"--(\d+)", argument)
+        if match:
+            normalized.extend(("--fileid", match.group(1)))
+            continue
+
+        normalized.append(argument)
+    return normalized
+
+
 class TaskTextParser(HTMLParser):
     def __init__(self):
         super().__init__(convert_charrefs=True)
@@ -772,6 +796,20 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Create a GitHub issue from a Teamwork COMREC task")
     parser.add_argument("teamwork_link", help="Teamwork task URL")
     parser.add_argument(
+        "--feed",
+        "--feedid",
+        dest="feed_id",
+        metavar="FEED_ID",
+        help="Override the feed ID extracted from the Teamwork task",
+    )
+    parser.add_argument(
+        "--adapter",
+        "--adapterid",
+        dest="adapter_id",
+        metavar="ADAPTER_ID",
+        help="Override the adapter ID extracted from the Teamwork task",
+    )
+    parser.add_argument(
         "--fileid",
         dest="file_id",
         metavar="FILE_ID",
@@ -818,7 +856,11 @@ def main() -> int:
         const="replace-blob",
         help="Force replace-blob operation using the reload template",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(normalize_compact_arguments(sys.argv[1:]))
+
+    for option, value in (("feed", args.feed_id), ("adapter", args.adapter_id)):
+        if value is not None and (not value.isdigit() or int(value) <= 0):
+            parser.error(f"--{option} must be a positive integer")
 
     if args.file_id:
         if args.operation not in {"reload", "replace-blob"}:
@@ -829,6 +871,10 @@ def main() -> int:
     try:
         task = {**parse_teamwork_link(args.teamwork_link)}
         task.update(fetch_task(task["task_id"]))
+        if args.feed_id:
+            task["feed_id"] = args.feed_id
+        if args.adapter_id:
+            task["adapter_id"] = args.adapter_id
         if args.file_id:
             task["file_ids"] = [args.file_id]
         analysis = analyze_task(task, args.operation)
