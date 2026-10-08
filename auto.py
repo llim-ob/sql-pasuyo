@@ -9,7 +9,9 @@ import os
 import re
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
+from html.parser import HTMLParser
 from pathlib import Path
 
 from tw_auth import QWEN_API_KEY, qwen_chat, teamwork_get
@@ -21,11 +23,28 @@ GITHUB_OWNER = os.getenv("GITHUB_OWNER", "objectbrightph")
 GITHUB_REPO = os.getenv("GITHUB_REPO", "sql-requests")
 
 
+class TaskTextParser(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts = []
+
+    def handle_data(self, data: str) -> None:
+        self.parts.append(data)
+
+
 def parse_teamwork_link(link: str) -> dict[str, str]:
-    match = re.search(r"/tasks/(\d+)(?:[/?#]|$)", link)
-    if not match:
+    path_parts = urllib.parse.urlsplit(link).path.split("/")
+    task_id = next(
+        (
+            path_parts[index + 1]
+            for index, part in enumerate(path_parts[:-1])
+            if part == "tasks" and path_parts[index + 1].isdigit()
+        ),
+        "",
+    )
+    if not task_id:
         raise ValueError("Could not extract a task ID from the Teamwork URL")
-    return {"task_id": match.group(1), "link": link}
+    return {"task_id": task_id, "link": link}
 
 
 def text_value(value) -> str:
@@ -33,7 +52,10 @@ def text_value(value) -> str:
         return ""
     if not isinstance(value, str):
         value = json.dumps(value)
-    return html.unescape(re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", value))).strip()
+    parser = TaskTextParser()
+    parser.feed(value)
+    parser.close()
+    return " ".join(html.unescape(" ".join(parser.parts)).split())
 
 
 def first_value(data: dict, *keys):
@@ -42,6 +64,51 @@ def first_value(data: dict, *keys):
         if value not in (None, "", []):
             return value
     return None
+
+
+def text_tokens(text: str) -> list[str]:
+    tokens = []
+    word = []
+    for char in text:
+        if char.isalnum() or char == "_":
+            word.append(char)
+        else:
+            if word:
+                tokens.append("".join(word))
+                word = []
+            if not char.isspace():
+                tokens.append(char)
+    if word:
+        tokens.append("".join(word))
+    return tokens
+
+
+def numeric_after(tokens: list[str], index: int, *, allow_id: bool = False, allow_for: bool = False) -> str:
+    index += 1
+    if allow_id and index < len(tokens) and tokens[index].lower() == "id":
+        index += 1
+    if allow_for and index < len(tokens) and tokens[index].lower() == "for":
+        index += 1
+    while index < len(tokens) and tokens[index] in {":", "#", "-", "("}:
+        index += 1
+    return tokens[index] if index < len(tokens) and tokens[index].isdigit() else ""
+
+
+def filename_after(text: str, label: str) -> str:
+    parts = text.split()
+    for index, part in enumerate(parts):
+        prefix, separator, value = part.partition(":")
+        if separator and prefix.lower() == label:
+            if not value and index + 1 < len(parts):
+                value = parts[index + 1]
+            value = value.lstrip("\"'")
+            filename = []
+            for char in value:
+                if not (char.isalnum() or char in "_.-"):
+                    break
+                filename.append(char)
+            return "".join(filename)
+    return ""
 
 
 def extract_task(task_id: str, payload: dict) -> dict:
@@ -55,38 +122,45 @@ def extract_task(task_id: str, payload: dict) -> dict:
 
     feed_id = first_value(data, "feedId", "feedID")
     adapter_id = first_value(data, "adapterId", "adapterID")
-    feed_match = re.search(r"Feed\s*ID\s*[:#-]?\s*(\d+)", source_text, re.IGNORECASE)
-    adapter_match = re.search(r"Adapter\s*ID\s*[:#-]?\s*(\d+)", source_text, re.IGNORECASE)
-    if feed_match:
-        feed_id = feed_match.group(1)
-    if adapter_match:
-        adapter_id = adapter_match.group(1)
 
     raw_file_ids = first_value(data, "fileIds", "fileIDs") or []
     if isinstance(raw_file_ids, (str, int)):
         raw_file_ids = [raw_file_ids]
     file_ids = [str(value) for value in raw_file_ids if value]
-    file_ids.extend(
-        re.findall(r"(?:File\s*ID|FileID|File\s*#)\s*[:#-]?\s*(\d+)", source_text, re.IGNORECASE)
-    )
-    file_ids.extend(
-        re.findall(r"\bFile\s+(\d+)\b", source_text, re.IGNORECASE)
-    )
-    file_ids.extend(
-        re.findall(
-            r"\b(\d+)\s*-\s*\d{1,2}/\d{1,2}/\d{4}\b",
-            source_text,
-        )
-    )
-    file_ids.extend(
-        re.findall(r"\bblob(?:\s+for)?\s*[:#-]?\s*(\d+)\b", source_text, re.IGNORECASE)
-    )
-    file_ids.extend(
-        re.findall(r"\bfor\s+(\d+)\b", source_text, re.IGNORECASE)
-    )
+    tokens = text_tokens(source_text)
+    for index, token in enumerate(tokens):
+        label = token.lower()
+        if label in {"feed", "feedid"}:
+            feed_id = numeric_after(tokens, index, allow_id=label == "feed") or feed_id
+        elif label in {"adapter", "adapterid"}:
+            adapter_id = numeric_after(tokens, index, allow_id=label == "adapter") or adapter_id
+        elif label in {"file", "fileid"}:
+            file_id = numeric_after(tokens, index, allow_id=label == "file")
+            if file_id:
+                file_ids.append(file_id)
+        elif label == "blob":
+            file_id = numeric_after(tokens, index, allow_for=True)
+            if file_id:
+                file_ids.append(file_id)
+        elif label == "for":
+            file_id = numeric_after(tokens, index)
+            if file_id:
+                file_ids.append(file_id)
+        if token.isdigit() and len(tokens) >= index + 7:
+            separator, month, slash1, day, slash2, year = tokens[index + 1:index + 7]
+            if (
+                (separator, slash1, slash2) == ("-", "/", "/")
+                and month.isdigit() and day.isdigit() and year.isdigit()
+                and 1 <= len(month) <= 2 and 1 <= len(day) <= 2 and len(year) == 4
+            ):
+                file_ids.append(token)
 
-    from_match = re.search(r"From\s*:\s*[\"']?([\w.-]+)", source_text, re.IGNORECASE)
-    to_match = re.search(r"To\s*:\s*[\"']?([\w.-]+)", source_text, re.IGNORECASE)
+    # Fallback: scan the entire source text for any standalone 7-digit numbers
+    # that haven't already been captured, treating them as file IDs.
+    for match in re.finditer(r'(?<!\d)(\d{7})(?!\d)', source_text):
+        candidate = match.group(1)
+        if candidate not in file_ids:
+            file_ids.append(candidate)
 
     return {
         "task_id": task_id,
@@ -95,8 +169,8 @@ def extract_task(task_id: str, payload: dict) -> dict:
         "feed_id": str(feed_id) if feed_id else "",
         "adapter_id": str(adapter_id) if adapter_id else "",
         "file_ids": list(dict.fromkeys(file_ids)),
-        "rename_from": from_match.group(1) if from_match else "",
-        "rename_to": to_match.group(1) if to_match else "",
+        "rename_from": filename_after(source_text, "from"),
+        "rename_to": filename_after(source_text, "to"),
     }
 
 
@@ -110,26 +184,39 @@ def fetch_task(task_id: str) -> dict:
 
 def analyze_task_hardcoded(task: dict) -> dict:
     """Classify supported operations without an external model."""
-    title_text = task["title"].lower()
-    description = task["description"]
-    description_text = description.lower()
+    title_words = [token.lower() for token in text_tokens(task["title"])]
+    description_words = [token.lower() for token in text_tokens(task["description"])]
     has_rename_pair = bool(task["rename_from"] and task["rename_to"])
 
-    if re.search(r"\b(delete|deletion|remove)\b", title_text):
+    def has_phrase(words: list[str], phrase: tuple[str, ...]) -> bool:
+        phrase_words = list(phrase)
+        return any(words[index:index + len(phrase)] == phrase_words for index in range(len(words)))
+
+    def has_any(words: list[str], choices: set[str]) -> bool:
+        return any(word in choices for word in words)
+
+    def has_reload(words: list[str]) -> bool:
+        return has_any(words, {"reload", "reprocess", "retry", "rerun"}) or has_phrase(words, ("re", "-", "run"))
+
+    if has_any(title_words, {"delete", "deletion", "remove"}):
         operation = "delete"
-    elif re.search(r"\b(rename|renamed|change filename)\b", title_text):
+    elif has_any(title_words, {"rename", "renamed"}) or has_phrase(title_words, ("change", "filename")):
         operation = "rename"
-    elif re.search(r"\breplace blob\b", title_text) and has_rename_pair:
+    elif has_phrase(title_words, ("replace", "blob")) and has_rename_pair:
         operation = "rename"
-    elif re.search(r"\b(reload|reprocess|retry|re-run|rerun)\b", title_text):
+    elif has_reload(title_words):
         operation = "reload"
-    elif re.search(r"\b(rename|renamed|change filename)\b", description_text):
+    elif has_any(description_words, {"rename", "renamed"}) or has_phrase(description_words, ("change", "filename")):
         operation = "rename"
-    elif re.search(r"\breplace blob\b", description_text) and has_rename_pair:
+    elif has_phrase(description_words, ("replace", "blob")) and has_rename_pair:
         operation = "rename"
-    elif re.search(r"\b(delete|deletion|remove)\s+(the|this|file|blob|record)", description_text):
+    elif any(
+        description_words[index] in {"delete", "deletion", "remove"}
+        and description_words[index + 1] in {"the", "this", "file", "blob", "record"}
+        for index in range(len(description_words) - 1)
+    ):
         operation = "delete"
-    elif re.search(r"\b(reload|reprocess|retry|re-run|rerun)\b", description_text):
+    elif has_reload(description_words):
         operation = "reload"
     else:
         operation = "reload"
@@ -194,10 +281,14 @@ def analyze_task(task: dict, operation: str | None = None) -> dict:
     try:
         result = json.loads(content)
     except json.JSONDecodeError as exc:
-        fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", content, re.DOTALL)
-        if not fenced:
+        start = content.find("```")
+        end = content.find("```", start + 3) if start != -1 else -1
+        fenced = content[start + 3:end].strip() if end != -1 else ""
+        if fenced.startswith("json"):
+            fenced = fenced[4:].strip()
+        if not (fenced.startswith("{") and fenced.endswith("}")):
             raise RuntimeError("Qwen returned invalid task-analysis JSON") from exc
-        result = json.loads(fenced.group(1))
+        result = json.loads(fenced)
 
     operation = result.get("operation")
     if operation not in {"reload", "rename", "delete"}:
