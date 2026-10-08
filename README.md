@@ -77,7 +77,7 @@ Keep `.env` private. Never commit API keys or tokens.
 
 The Teamwork task title or description should include:
 
-- Feed ID, for example `Feed ID: 396`
+- Feed ID, for example `Feed ID: 396` or `Feed 396`
 - Adapter ID, for example `Adapter ID: 396`
 - File ID, for example `File ID: 2756788`, `File (2756788)`, `File 2756788`, `blob for 2756788`, or a line such as `2780005 - 09/23/2026`
 

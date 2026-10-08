@@ -10,7 +10,7 @@ DELETE FROM {detail_table} WHERE fileid IN ({fileids});
 UPDATE carrier_file_workflow SET filename='{filename}', processdate = '', processstatus = '',is_export='' WHERE fileid IN ({fileids});
 commit;
 
-login to 10.200.1.105
+login to ssh into Comrec Production server
 cd /comrec_ecs/ctl_file
 rm *.bad
 cd /comrec_ecs/
