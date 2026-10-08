@@ -1,10 +1,12 @@
-# auto-cr
+# sql-pasuyo
 
-`auto-cr` converts a Teamwork task link into a GitHub issue containing the SQL and operational instructions for a COMREC request.
+`sql-pasuyo` converts a Teamwork task link into a GitHub issue containing the SQL and operational instructions for a COMREC request.
 
-It reads the Teamwork task, determines whether the request is a reload, rename, or delete operation, fills the matching local template, and creates one issue in the configured GitHub repository.
+It reads the Teamwork task, determines whether the request is a reload, replace-blob, rename, or delete operation, fills the matching local template, adds the appropriate tags to the Teamwork task, and creates one issue in the configured GitHub repository.
 
-The script does not execute SQL, connect to a database, run shell commands, or create a pull request.
+The script does not execute SQL, run shell commands, or create a pull request. For rename requests,
+it performs one read-only Oracle `SELECT` to determine the existing file type before rendering the
+GitHub issue.
 
 ## How To Use It
 
@@ -13,7 +15,7 @@ The script does not execute SQL, connect to a database, run shell commands, or c
 From the project directory:
 
 ```bash
-cd /Users/liamrhysslim/Codes/auto-cr
+cd /Users/{your_folder}/Codes/sql-pasuyo
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 ```
@@ -26,19 +28,29 @@ Create `.env` in the project directory:
 
 ```dotenv
 # GitHub issue destination
-GITHUB_TOKEN=your_github_token
+GITHUB_TOKEN=your_github_token # REQUIRED
 GITHUB_OWNER=objectbrightph
 GITHUB_REPO=sql-requests
 GITHUB_LABEL=sql-request
 
 # Teamwork authentication: use either API key or OAuth access token
-TW_API_KEY=your_teamwork_api_key
+TW_API_KEY=your_teamwork_api_key # REQUIRED
 # TW_ACCESS_TOKEN=your_teamwork_access_token
 
-# Optional Qwen task classification
+# Optional AI task classification
 # QWEN_API_KEY=your_qwen_api_key
 # QWEN_API_BASE=
 # QWEN_MODEL=
+
+# Read-only Oracle lookups for rename filenames and AI-adapter reloads
+DB_CONNECTION=oracle
+DB_DATABASE=database
+DB_HOST=dbhost
+DB_PASSWORD=dbpassword
+DB_PORT=dbport
+DB_USERNAME=dbuser
+# Required for the older AIMSPRD server; use the directory containing libclntsh.dylib.
+DB_ORACLE_CLIENT_LIB=/path/to/instantclient
 ```
 
 Required values:
@@ -46,11 +58,18 @@ Required values:
 | Variable | Required | Purpose |
 | --- | --- | --- |
 | `GITHUB_TOKEN` | Yes | Allows the script to create GitHub issues. |
-| `TW_API_KEY` or `TW_ACCESS_TOKEN` | Yes | Allows the script to read the Teamwork task. |
+| `TW_API_KEY` or `TW_ACCESS_TOKEN` | Yes | Allows the script to read and tag the Teamwork task. |
 | `GITHUB_OWNER` | No | GitHub owner. Defaults to `objectbrightph`. |
 | `GITHUB_REPO` | No | GitHub repository. Defaults to `sql-requests`. |
 | `GITHUB_LABEL` | No | Issue label. Defaults to `sql-request`. |
 | `QWEN_API_KEY` | No | Enables Qwen classification. Without it, local rules are used. |
+| `DB_CONNECTION` | Rename or reload | Must be `oracle` when a rename or reload is processed. |
+| `DB_DATABASE` | Rename or reload | Oracle service name, such as `database`. |
+| `DB_HOST` | Rename or reload | Oracle database host. |
+| `DB_PASSWORD` | Rename or reload | Oracle read-only lookup password. |
+| `DB_PORT` | Rename or reload | Oracle listener port, normally `1521`. |
+| `DB_USERNAME` | Rename or reload | Oracle lookup username. |
+| `DB_ORACLE_CLIENT_LIB` | Rename or reload | Directory containing the Oracle Instant Client libraries, such as `libclntsh.dylib`. Required for the older AIMSPRD server. |
 
 Keep `.env` private. Never commit API keys or tokens.
 
@@ -69,15 +88,53 @@ From: OLD_FILENAME
 To: NEW_FILENAME
 ```
 
+The description can also use natural-language filename changes:
+
+```text
+Update filename from OLD_FILENAME to NEW_FILENAME
+```
+
+The phrases `update file name`, `update filename`, `from OLD_FILENAME to NEW_FILENAME`,
+and their equivalent title forms trigger rename classification. The script looks up the existing
+filename in `carrier_file_workflow` using each extracted file ID, reads its `filename` column,
+and appends/replaces that extension on the requested destination, for example `NEW_FILENAME.xlsx`.
+The database lookup uses only `SELECT filename ... WHERE fileid = :fileid`; it does not update,
+delete, commit, or otherwise modify the production database.
+
+### Oracle Instant Client requirement
+
+The AIMSPRD Oracle server is an older version that cannot be accessed by
+`python-oracledb` Thin mode. Install the Oracle Instant Client for macOS, then set
+the directory containing `libclntsh.dylib` in `.env`:
+
+```dotenv
+DB_ORACLE_CLIENT_LIB=/path/to/instantclient
+```
+
+The script initializes `python-oracledb` Thick mode before the read-only lookup.
+It stops with a configuration error if the client libraries cannot be loaded.
+
 The script also reads `feedId`, `adapterId`, and `fileIds` when those values are present in the Teamwork API response.
+Before creating the issue, it prints the detail table derived from the adapter ID directly below the extracted File IDs.
+Adapters below 600 use `ecs_detail_type<adapterId>`; adapters 600 and above use
+`eps_detail_type_<adapterId>`.
+
+For reload requests, the script also performs a read-only lookup in
+`carrier_feed_control` using the extracted feed ID. It examines Python
+commandlines such as `python :5foldername/AI_script.py`; when the script
+basename contains `AI_`, the file IDs are treated as AI adapters and the
+request uses `template/ai_reload.txt`. Other reloads continue to use
+`template/reload.txt`. If no matching AI commandline is found, the standard
+reload template is used.
 
 ### 4. Submit the Teamwork link
 
-From Finder, drag the Teamwork task link onto the executable `a` file inside
-the `auto-cr` folder. macOS may pass the dropped link as a `.webloc` file;
+Use the executable `paste-tw` to submit the Teamwork task link. From Finder, drag the
+Teamwork task link onto `paste-tw` inside
+the `sql-pasuyo` folder. macOS may pass the dropped link as a `.webloc` file;
 the launcher reads its URL automatically.
 
-You can also double-click `a`, then paste the Teamwork link when prompted. After
+You can also double-click `paste-tw`, then paste the Teamwork link when prompted. After
 each process finishes, the launcher prompts for another link in the same
 Terminal session:
 
@@ -91,45 +148,52 @@ Paste Teamwork task link (Ctrl-D to quit):
 Press `Ctrl-D` at the prompt to close the session. Command-line launches with
 an explicit URL still run once and exit.
 
-Command-line usage remains supported:
-
-Run `auto.py` with the Teamwork task URL:
+From a terminal, run `paste-tw` with the Teamwork task URL:
 
 ```bash
-.venv/bin/python auto.py \
+./paste-tw \
   "https://objectbright.teamwork.com/app/tasks/27255838"
-```
-
-You can also use the `a` launcher from the project directory:
-
-```bash
-./a "https://objectbright.teamwork.com/app/tasks/27255838"
 ```
 
 Force an operation with a flag when the request wording is already known:
 
 ```bash
-.venv/bin/python auto.py "https://objectbright.teamwork.com/app/tasks/27261684" --reload
-.venv/bin/python auto.py "https://objectbright.teamwork.com/app/tasks/27261684" --delete
-.venv/bin/python auto.py "https://objectbright.teamwork.com/app/tasks/27261684" --replace-blob
+./paste-tw "https://objectbright.teamwork.com/app/tasks/27261684" --reload
+./paste-tw "https://objectbright.teamwork.com/app/tasks/27261684" --delete
+./paste-tw "https://objectbright.teamwork.com/app/tasks/27261684" --replace-blob
+./paste-tw "https://objectbright.teamwork.com/app/tasks/27261684" --reload --fileid 2756788
+./paste-tw "https://objectbright.teamwork.com/app/tasks/27261684" --replace-blob --fileid 2756788
+./paste-tw "https://objectbright.teamwork.com/app/tasks/27261684" --reload --2756788
+./paste-tw "https://objectbright.teamwork.com/app/tasks/27261684" --replace-blob --2756788
 ```
 
 `--replace-blob` uses the existing reload template. `--rename` is also
 available for an explicit filename-change request. The equivalent generic form
 is `--operation reload`, `--operation delete`, `--operation rename`, or
-`--operation replace-blob`.
+`--operation replace-blob`. Use `--fileid FILE_ID` with `--reload` or
+`--replace-blob` when the file ID should be supplied explicitly; it replaces
+any file IDs extracted from the Teamwork task. The shorthand `--FILE_ID` is
+also supported immediately after the operation flag, for example
+`--reload --2756788` or `--replace-blob --2756788`. With the generic form,
+use `--operation reload --2756788`.
 
 If no operation flag is provided, the script fetches and analyzes the Teamwork
 task using Qwen when configured, or local rules otherwise:
 
 ```bash
-.venv/bin/python auto.py \
+./paste-tw \
   "https://objectbright.teamwork.com/app/tasks/27261684"
 ```
 
-The same flags can be passed through `paste-tw` or `./a` when launching from a
-terminal. A dropped `.webloc` contains only the link, so it follows the
-analysis path unless an operation flag is added to the launcher command.
+The same flags can be passed through `paste-tw` when launching from a terminal. A
+dropped `.webloc` contains only the link, so it follows the analysis path unless an
+operation flag is added to the launcher command.
+
+For reload, replace-blob, delete, and rename requests, the script adds the
+`SQL Request` tag to the Teamwork task. Replace-blob requests (selected with
+`--replace-blob` or identified from `replace blob` wording) also receive the
+`BLOB Update` tag. Existing Teamwork tags are preserved. Tagging happens before
+the GitHub issue is created.
 
 When using the interactive prompt, enter the link and optional flag as separate
 space-delimited arguments:
@@ -161,7 +225,7 @@ Issue created: https://github.com/objectbrightph/sql-requests/issues/123
 ## Teamwork Link To GitHub Issue Flow
 
 ```text
-Paste Teamwork task link into auto.py
+Paste Teamwork task link into paste-tw
                  |
                  v
 Extract numeric Teamwork task ID
@@ -176,12 +240,18 @@ Fetch task title and description
 Extract feed ID, adapter ID, file IDs, and rename filenames
                  |
                  v
-Use explicit operation flag, or analyze task: reload, rename, or delete
+Use explicit operation flag, or analyze task: reload, replace-blob, rename, or delete
                  |
                  +--> delete: ask for template mode 1 or 2
                  |
                  v
+For reload: inspect carrier_feed_control commandline for an AI_ Python script
+                 |
+                 v
 Load and fill operation template from template/
+                 |
+                 v
+Add Teamwork tags: SQL Request, and BLOB Update for replace-blob
                  |
                  v
 Insert rendered request into sql_request.txt
@@ -209,17 +279,28 @@ The script supports Teamwork API-key authentication with `TW_API_KEY` and OAuth 
 
 ### 3. Extract task data
 
-The title and description are normalized, then the script extracts:
+The title and description are normalized, then the script extracts values from
+the task API fields, matching custom fields, and task text. If either ID is
+not present in the main task response, `auto.py` also reads the task's
+Teamwork custom-field endpoint so custom-field values with names such as
+`Feed ID` and `Adapter ID` can be matched.
 
 | Value | Supported examples |
 | --- | --- |
-| Feed ID | `Feed ID: 396`, `Feed 396` (including titles such as `Adapter ID 291 Feed 291`) |
-| Adapter ID | `Adapter ID: 396` |
-| File ID | `File ID: 2756788`, `FileID 2756788`, `File #2756788`, `File (2756788)`, `File 2756788`, `blob for 2756788`, `for 2756788`, `2780005 - 09/23/2026` |
+| Feed ID | API `feedId`, a custom field named `Feed ID`, `Feed ID: 396`, or `Feed 396` |
+| Adapter ID | API `adapterId`, a custom field named `Adapter ID`, or `Adapter ID: 396` |
+| File ID | `File ID: 2756788`, `FileID 2756788`, `File #2756788`, `File (2756788)`, `File 2756788`, `blob for 2756788`, `for 2756788`, `2780005 - 09/23/2026`, `Please check files: 123213 1232131 81293 123123`, `Please check files: 123213, 1232131`, or a reload list after `following file id due to Error status.` |
 | Rename source | `From: OLD_FILENAME` |
-| Rename destination | `To: NEW_FILENAME` |
+| Rename destination | `To: NEW_FILENAME`, or `from OLD_FILENAME to NEW_FILENAME` |
 
-The script stops before creating the issue if feed ID, adapter ID, file ID, or title is missing. Rename operations also require a destination filename.
+The script stops before creating the issue if feed ID, adapter ID, file ID, or title is missing. Rename operations also require a destination filename and the Oracle read-only filename lookup settings.
+
+Reload requests may also contain a bare list of file IDs, with one numeric ID
+per line, after the error-status sentence. For example, the IDs in
+`Please reload the following file id due to Error status.\n2781420\n2781675`
+are extracted as two file IDs.
+Requests beginning with `check files` may list multiple IDs separated by
+spaces or commas; both separators are supported.
 
 ### 4. Classify the operation
 
@@ -245,6 +326,7 @@ Operation templates are stored in `template/`:
 | Operation | Template |
 | --- | --- |
 | Reload | `template/reload.txt` |
+| AI adapter reload | `template/ai_reload.txt` when `carrier_feed_control.commandline` contains a Python script with `AI_` in its basename |
 | Rename | `template/rename.txt` |
 | Delete mode 1 | `template/delete1.txt` |
 | Delete mode 2 | `template/delete2.txt` |
@@ -256,10 +338,15 @@ The selected template is filled with:
 | `{feed_id}` | Extracted Teamwork feed ID |
 | `{adapter_id}` | Extracted Teamwork adapter ID |
 | `{fileids}` | File IDs joined with commas |
-| `{filename}` | Rename destination filename |
+| `{filename}` | Rename destination filename with the file type from Oracle |
 
 Plain reload requests use `Request Details: For Reload`. `--replace-blob`
 requests use `Request Details: For Reload / BLOB Update`.
+
+Reload classification requires the read-only Oracle lookup described above so
+that AI adapter reloads can be distinguished from normal reloads. The lookup
+uses the feed ID, selects Python commandlines from `carrier_feed_control`, and
+does not update, delete, commit, or otherwise modify the production database.
 
 The templates contain the SQL and any required shell commands or verification queries. Those instructions are included as text in the GitHub issue; they are not executed by `auto.py`.
 
@@ -293,6 +380,15 @@ The request includes:
 ```
 
 The label comes from `GITHUB_LABEL`.
+
+Before creating the issue, the script adds Teamwork tags through:
+
+```text
+PUT https://objectbright.teamwork.com/tasks/<task_id>/tags.json
+```
+
+Each tag is added without replacing existing tags. All supported operations add
+`SQL Request`; replace-blob requests additionally add `BLOB Update`.
 
 ## OAuth Setup
 
@@ -342,5 +438,5 @@ Use the project virtual environment directly:
 
 ```bash
 .venv/bin/python -m pip install -r requirements.txt
-.venv/bin/python auto.py "<teamwork-task-link>"
+./paste-tw "<teamwork-task-link>"
 ```

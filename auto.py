@@ -14,13 +14,23 @@ import urllib.request
 from html.parser import HTMLParser
 from pathlib import Path
 
-from tw_auth import QWEN_API_KEY, qwen_chat, teamwork_get
+from tw_auth import QWEN_API_KEY, qwen_chat, teamwork_add_tag, teamwork_get
 
 BASE_DIR = Path(__file__).parent
 TEMPLATE_DIR = BASE_DIR / "template"
 GITHUB_API = "https://api.github.com"
 GITHUB_OWNER = os.getenv("GITHUB_OWNER", "objectbrightph")
 GITHUB_REPO = os.getenv("GITHUB_REPO", "sql-requests")
+SQL_REQUEST_TAG = "SQL Request"
+BLOB_UPDATE_TAG = "BLOB Update"
+
+
+def detail_table_name(adapter_id: str) -> str:
+    """Return the detail table name for an adapter ID."""
+    adapter_number = int(adapter_id)
+    if adapter_number >= 600:
+        return f"eps_detail_type_{adapter_number}"
+    return f"ecs_detail_type{adapter_number}"
 
 
 class TaskTextParser(HTMLParser):
@@ -176,10 +186,35 @@ def extract_task(task_id: str, payload: dict) -> dict:
 
 def fetch_task(task_id: str) -> dict:
     """Fetch task data directly through the Teamwork API, without browser login."""
-    return extract_task(
-        task_id,
-        teamwork_get(f"/projects/api/v3/tasks/{task_id}.json"),
+    payload = teamwork_get(f"/projects/api/v3/tasks/{task_id}.json")
+    task = extract_task(task_id, payload)
+    if task["feed_id"] and task["adapter_id"]:
+        return task
+
+    # Teamwork's task endpoint may return custom-field values only as IDs. The
+    # task custom-fields endpoint can include the field names, allowing us to
+    # distinguish the Feed ID and Adapter ID values.
+    custom_fields_payload = teamwork_get(
+        f"/projects/api/v3/tasks/{task_id}/customfields.json?fields[customfields]=name"
     )
+    data = payload.get("task", payload)
+    if isinstance(data, dict):
+        enriched_payload = dict(payload)
+        enriched_data = dict(data)
+        custom_fields = custom_fields_payload.get("customfieldTasks", [])
+        if custom_fields:
+            existing = enriched_data.get("customFields", [])
+            if isinstance(existing, dict):
+                existing = [existing]
+            elif not isinstance(existing, list):
+                existing = []
+            enriched_data["customFields"] = [*existing, *custom_fields]
+        if "task" in payload:
+            enriched_payload["task"] = enriched_data
+        else:
+            enriched_payload = enriched_data
+        return extract_task(task_id, enriched_payload)
+    return task
 
 
 def analyze_task_hardcoded(task: dict) -> dict:
@@ -187,6 +222,14 @@ def analyze_task_hardcoded(task: dict) -> dict:
     title_words = [token.lower() for token in text_tokens(task["title"])]
     description_words = [token.lower() for token in text_tokens(task["description"])]
     has_rename_pair = bool(task["rename_from"] and task["rename_to"])
+    title_pair = extract_rename_pair(task["title"])
+    description_pair = extract_rename_pair(description)
+    title_has_rename_pair = bool(title_pair[0] and title_pair[1])
+    description_has_rename_pair = bool(description_pair[0] and description_pair[1])
+    rename_trigger = (
+        r"\b(rename|renamed|change\s+filename|update\s+file\s+name|"
+        r"update\s+filename)\b"
+    )
 
     def has_phrase(words: list[str], phrase: tuple[str, ...]) -> bool:
         phrase_words = list(phrase)
@@ -221,10 +264,18 @@ def analyze_task_hardcoded(task: dict) -> dict:
     else:
         operation = "reload"
 
+    replace_blob_request = operation == "reload" and bool(
+        re.search(r"\breplace[\s-]+blob\b", source_text, re.IGNORECASE)
+    )
+
     return {
         "operation": operation,
         "rename_to": task["rename_to"] if operation == "rename" else "",
-        "request_details": "For Reload" if operation == "reload" else "",
+        "request_details": (
+            "For Reload / BLOB Update"
+            if replace_blob_request
+            else "For Reload" if operation == "reload" else ""
+        ),
         "rationale": "Matched local COMREC operation rules.",
         "analyzer": "hardcoded",
     }
@@ -248,9 +299,13 @@ def analyze_task(task: dict, operation: str | None = None) -> dict:
             "analyzer": "explicit flag",
         }
 
-    # Fall back to configured model analysis, then local deterministic rules.
+    # Strong local filename triggers must remain deterministic even when Qwen
+    # is configured. Qwen is still used for wording not covered by these rules.
+    local_analysis = analyze_task_hardcoded(task)
+    if local_analysis["operation"] == "rename":
+        return local_analysis
     if not QWEN_API_KEY:
-        return analyze_task_hardcoded(task)
+        return local_analysis
 
     prompt = {
         "title": task["title"],
@@ -269,6 +324,8 @@ def analyze_task(task: dict, operation: str | None = None) -> dict:
                     "Classify a COMREC Teamwork task. Return JSON only with keys "
                     "operation, rename_to, rationale. operation must be exactly "
                     "reload, rename, or delete. Use rename only for a filename change. "
+                    "Treat 'update file name', 'update filename', and 'from OLD to NEW' "
+                    "as filename-change wording. "
                     "Use delete only when the task asks to remove/delete data. "
                     "Use reload for replacing/reprocessing a blob without deletion or "
                     "filename change. rename_to must be an empty string unless operation "
@@ -293,18 +350,257 @@ def analyze_task(task: dict, operation: str | None = None) -> dict:
     operation = result.get("operation")
     if operation not in {"reload", "rename", "delete"}:
         raise RuntimeError("Qwen returned an unsupported operation")
-    rename_to = str(result.get("rename_to") or "").strip()
+    # Prefer the filename parsed directly from the Teamwork task. This prevents
+    # a model response from accidentally using the task title as the filename.
+    rename_to = str(task["rename_to"] or result.get("rename_to") or "").strip()
     if operation == "rename" and not rename_to:
         raise RuntimeError("Qwen classified task as rename but returned no destination filename")
     if operation != "rename":
         rename_to = ""
+    replace_blob_request = operation == "reload" and bool(
+        re.search(r"\breplace[\s-]+blob\b", f"{task['title']}\n{task['description']}", re.IGNORECASE)
+    )
     return {
         "operation": operation,
         "rename_to": rename_to,
-        "request_details": "For Reload" if operation == "reload" else "",
+        "request_details": (
+            "For Reload / BLOB Update"
+            if replace_blob_request
+            else "For Reload" if operation == "reload" else ""
+        ),
         "rationale": str(result.get("rationale") or ""),
         "analyzer": "qwen",
     }
+
+
+def append_database_file_extension(task: dict) -> dict:
+    """Append the production filename extension using a read-only Oracle query."""
+    if task["operation"] != "rename":
+        return task
+
+    try:
+        import oracledb
+    except ImportError as exc:
+        raise RuntimeError(
+            "The oracledb package is required for rename tasks; install requirements.txt"
+        ) from exc
+
+    db_connection = os.getenv("DB_CONNECTION", "oracle").strip().lower()
+    if db_connection != "oracle":
+        raise RuntimeError("DB_CONNECTION must be oracle for rename filename lookup")
+
+    required = {
+        "DB_DATABASE": os.getenv("DB_DATABASE", "").strip(),
+        "DB_HOST": os.getenv("DB_HOST", "").strip(),
+        "DB_PASSWORD": os.getenv("DB_PASSWORD", ""),
+        "DB_PORT": os.getenv("DB_PORT", "").strip(),
+        "DB_USERNAME": os.getenv("DB_USERNAME", "").strip(),
+    }
+    missing = [name for name, value in required.items() if not value]
+    if missing:
+        raise RuntimeError(
+            "Rename filename lookup requires database settings: " + ", ".join(missing)
+        )
+
+    try:
+        port = int(required["DB_PORT"])
+    except ValueError as exc:
+        raise RuntimeError("DB_PORT must be an integer") from exc
+
+    # AIMSPRD uses an Oracle server version that is not supported by the
+    # python-oracledb Thin mode. Thick mode requires Oracle Instant Client.
+    client_lib = os.getenv("DB_ORACLE_CLIENT_LIB", "").strip()
+    try:
+        if oracledb.is_thin_mode():
+            if client_lib:
+                oracledb.init_oracle_client(lib_dir=client_lib)
+            else:
+                oracledb.init_oracle_client()
+    except oracledb.Error as exc:
+        raise RuntimeError(
+            "AIMSPRD requires python-oracledb Thick mode, but Oracle Instant Client "
+            "could not be loaded. Install Oracle Instant Client and set "
+            "DB_ORACLE_CLIENT_LIB to its directory in .env."
+        ) from exc
+
+    connection = None
+    extensions = set()
+    try:
+        dsn = oracledb.makedsn(
+            required["DB_HOST"],
+            port,
+            service_name=required["DB_DATABASE"],
+        )
+        connection = oracledb.connect(
+            user=required["DB_USERNAME"],
+            password=required["DB_PASSWORD"],
+            dsn=dsn,
+        )
+        with connection.cursor() as cursor:
+            for file_id in task["file_ids"]:
+                try:
+                    numeric_file_id = int(file_id)
+                except (TypeError, ValueError) as exc:
+                    raise RuntimeError(
+                        f"Invalid file ID for filename lookup: {file_id}"
+                    ) from exc
+
+                # Read-only by design: this is the only statement executed here.
+                cursor.execute(
+                    "SELECT filename FROM carrier_file_workflow WHERE fileid = :fileid",
+                    fileid=numeric_file_id,
+                )
+                row = cursor.fetchone()
+                if not row or not row[0]:
+                    raise RuntimeError(
+                        f"No filename found in carrier_file_workflow for file ID {file_id}"
+                    )
+                extension = Path(str(row[0]).strip()).suffix.lstrip(".")
+                if not extension:
+                    raise RuntimeError(
+                        f"Filename for file ID {file_id} has no file extension"
+                    )
+                extensions.add(extension.lower())
+    except oracledb.Error as exc:
+        raise RuntimeError(f"Read-only Oracle filename lookup failed: {exc}") from exc
+    finally:
+        if connection is not None:
+            connection.close()
+
+    if len(extensions) != 1:
+        raise RuntimeError(
+            "Rename file IDs must resolve to exactly one file type; "
+            f"found: {', '.join(sorted(extensions)) or 'none'}"
+        )
+
+    extension = next(iter(extensions))
+    filename = task["rename_to"].strip()
+    current_suffix = Path(filename).suffix
+    expected_suffix = f".{extension}"
+    if current_suffix.lower() != expected_suffix:
+        filename = (
+            f"{filename}{expected_suffix}"
+            if not current_suffix
+            else f"{filename[:-len(current_suffix)]}{expected_suffix}"
+        )
+    task["rename_to"] = filename
+    return task
+
+
+def commandline_uses_ai_adapter(commandline) -> bool:
+    """Return whether a Python command runs an AI adapter script."""
+    commandline = str(commandline or "")
+    python_match = re.search(r"\bpython(?:\d+(?:\.\d+)?)?\b", commandline, re.IGNORECASE)
+    if not python_match:
+        return False
+
+    # The commandline format uses paths such as :5foldername/AI_script.py.
+    # Inspect each argument after Python and only match AI_ in the script's
+    # basename, rather than in an unrelated folder name or argument.
+    arguments = re.findall(r'''(?:[^\s"']+|"[^"]*"|'[^']*')+''', commandline[python_match.end():])
+    for argument in arguments:
+        argument = argument.strip("\"'")
+        if argument.startswith("-"):
+            continue
+        basename = re.split(r"[/\\]", argument)[-1]
+        return "AI_" in basename
+    return False
+
+
+def detect_ai_adapter(task: dict) -> dict:
+    """Use the feed control commandline to identify AI-adapter reloads."""
+    task = dict(task)
+    task["is_ai_adapter"] = False
+    if task["operation"] != "reload":
+        return task
+
+    try:
+        import oracledb
+    except ImportError as exc:
+        raise RuntimeError(
+            "The oracledb package is required to identify AI adapter reloads; "
+            "install requirements.txt"
+        ) from exc
+
+    db_connection = os.getenv("DB_CONNECTION", "oracle").strip().lower()
+    if db_connection != "oracle":
+        raise RuntimeError("DB_CONNECTION must be oracle for AI adapter lookup")
+
+    required = {
+        "DB_DATABASE": os.getenv("DB_DATABASE", "").strip(),
+        "DB_HOST": os.getenv("DB_HOST", "").strip(),
+        "DB_PASSWORD": os.getenv("DB_PASSWORD", ""),
+        "DB_PORT": os.getenv("DB_PORT", "").strip(),
+        "DB_USERNAME": os.getenv("DB_USERNAME", "").strip(),
+    }
+    missing = [name for name, value in required.items() if not value]
+    if missing:
+        raise RuntimeError(
+            "AI adapter lookup requires database settings: " + ", ".join(missing)
+        )
+
+    try:
+        port = int(required["DB_PORT"])
+    except ValueError as exc:
+        raise RuntimeError("DB_PORT must be an integer") from exc
+
+    client_lib = os.getenv("DB_ORACLE_CLIENT_LIB", "").strip()
+    try:
+        if oracledb.is_thin_mode():
+            if client_lib:
+                oracledb.init_oracle_client(lib_dir=client_lib)
+            else:
+                oracledb.init_oracle_client()
+    except oracledb.Error as exc:
+        raise RuntimeError(
+            "AIMSPRD requires python-oracledb Thick mode, but Oracle Instant Client "
+            "could not be loaded. Install Oracle Instant Client and set "
+            "DB_ORACLE_CLIENT_LIB to its directory in .env."
+        ) from exc
+
+    connection = None
+    try:
+        dsn = oracledb.makedsn(
+            required["DB_HOST"],
+            port,
+            service_name=required["DB_DATABASE"],
+        )
+        connection = oracledb.connect(
+            user=required["DB_USERNAME"],
+            password=required["DB_PASSWORD"],
+            dsn=dsn,
+        )
+        with connection.cursor() as cursor:
+            try:
+                feed_id = int(task["feed_id"])
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError(
+                    f"Invalid feed ID for AI adapter lookup: {task['feed_id']}"
+                ) from exc
+
+            # Fetch the feed's Python commandlines, then inspect the script
+            # basename for the AI_ marker. No database data is modified.
+            cursor.execute(
+                """
+                SELECT commandline
+                FROM carrier_feed_control
+                WHERE feedid = :feed_id
+                  AND LOWER(commandline) LIKE '%python%'
+                """,
+                feed_id=feed_id,
+            )
+            task["is_ai_adapter"] = any(
+                commandline_uses_ai_adapter(row[0])
+                for row in cursor.fetchall()
+                if row
+            )
+    except oracledb.Error as exc:
+        raise RuntimeError(f"Read-only Oracle AI adapter lookup failed: {exc}") from exc
+    finally:
+        if connection is not None:
+            connection.close()
+
+    return task
 
 
 def validate_task(task: dict, analysis: dict) -> dict:
@@ -327,6 +623,16 @@ def validate_task(task: dict, analysis: dict) -> dict:
     return task
 
 
+def add_teamwork_tags(task: dict) -> None:
+    """Tag the source Teamwork task according to the selected operation."""
+    tags = [SQL_REQUEST_TAG]
+    if task["request_details"] == "For Reload / BLOB Update":
+        tags.append(BLOB_UPDATE_TAG)
+
+    for tag in tags:
+        teamwork_add_tag(task["task_id"], tag)
+
+
 def choose_delete_mode() -> str:
     while True:
         choice = input("Delete mode: choose 1 (delete1.txt) or 2 (delete2.txt): ").strip()
@@ -339,10 +645,13 @@ def render_reference_template(task: dict) -> str:
     template_name = (
         f"delete{choose_delete_mode()}.txt" if task["operation"] == "delete" else f"{task['operation']}.txt"
     )
+    if task["operation"] == "reload" and task.get("is_ai_adapter", False):
+        template_name = "ai_reload.txt"
     template = (TEMPLATE_DIR / template_name).read_text(encoding="utf-8")
     replacements = {
         "{feed_id}": task["feed_id"],
         "{adapter_id}": task["adapter_id"],
+        "{detail_table}": detail_table_name(task["adapter_id"]),
         "{fileids}": ",".join(task["file_ids"]),
         "{filename}": task["rename_to"],
         "{request_details}": task.get("request_details", "For Reload"),
@@ -399,6 +708,12 @@ def create_github_issue(task: dict, request_text: str) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Create a GitHub issue from a Teamwork COMREC task")
     parser.add_argument("teamwork_link", help="Teamwork task URL")
+    parser.add_argument(
+        "--fileid",
+        dest="file_id",
+        metavar="FILE_ID",
+        help="Use this file ID for reload or replace-blob requests",
+    )
     operation_group = parser.add_mutually_exclusive_group()
     operation_group.add_argument(
         "--operation",
@@ -435,18 +750,35 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    if args.file_id:
+        if args.operation not in {"reload", "replace-blob"}:
+            parser.error("--fileid can only be used with --reload or --replace-blob")
+        if not args.file_id.isdigit() or int(args.file_id) <= 0:
+            parser.error("--fileid must be a positive integer")
+
     try:
         task = {**parse_teamwork_link(args.teamwork_link)}
         task.update(fetch_task(task["task_id"]))
+        if args.file_id:
+            task["file_ids"] = [args.file_id]
         analysis = analyze_task(task, args.operation)
         task = validate_task(task, analysis)
+        task = append_database_file_extension(task)
+        task = detect_ai_adapter(task)
         request_text = render_reference_template(task)
+        add_teamwork_tags(task)
         print(f"Operation: {task['operation']}")
         print(f"Analyzer: {task['analyzer']}")
         print(f"Analysis rationale: {task['rationale']}")
         print(f"Feed ID: {task['feed_id']}")
         print(f"Adapter ID: {task['adapter_id']}")
         print(f"File IDs: {', '.join(task['file_ids'])}")
+        print(f"AI Adapter: {'yes' if task.get('is_ai_adapter') else 'no'}")
+        print(f"Table: {detail_table_name(task['adapter_id'])}")
+        if task["operation"] == "rename":
+            print(f"Rename destination: {task['rename_to']}")
+        print(f"")
+        print(f"CHECK ALWAYS THE QUERY IN THE ISSUE BEFORE SUBMITTING IT")
         print(f"Issue created: {create_github_issue(task, request_text)}")
         return 0
     except (ValueError, RuntimeError, OSError, json.JSONDecodeError) as exc:
