@@ -155,11 +155,27 @@ From a terminal, run `paste-tw` with the Teamwork task URL:
   "https://objectbright.teamwork.com/app/tasks/27255838"
 ```
 
-Force an operation with a flag when the request wording is already known:
+### Force an operation
+
+When the requested operation is already known, use one of these mutually exclusive
+flags instead of letting the script classify the Teamwork task:
+
+- `--reload`
+- `--delete`
+- `--reload-delete`
+- `--rename`
+- `--replace-blob`
+
+The generic form, `--operation OPERATION`, accepts the same operation names. For
+example, `--operation reload` is equivalent to `--reload`.
+
+Examples:
 
 ```bash
 ./paste-tw "https://objectbright.teamwork.com/app/tasks/27261684" --reload
 ./paste-tw "https://objectbright.teamwork.com/app/tasks/27261684" --delete
+./paste-tw "https://objectbright.teamwork.com/app/tasks/27261684" --reload-delete
+./paste-tw "https://objectbright.teamwork.com/app/tasks/27261684" --rename
 ./paste-tw "https://objectbright.teamwork.com/app/tasks/27261684" --replace-blob
 ./paste-tw "https://objectbright.teamwork.com/app/tasks/27261684" --reload --fileid 2756788
 ./paste-tw "https://objectbright.teamwork.com/app/tasks/27261684" --replace-blob --fileid 2756788
@@ -173,20 +189,32 @@ Force an operation with a flag when the request wording is already known:
   --feed396 --adapter396 --2756788 --replace-blob
 ```
 
-`--replace-blob` uses the existing reload template. `--rename` is also
-available for an explicit filename-change request. The equivalent generic form
-is `--operation reload`, `--operation delete`, `--operation rename`, or
-`--operation replace-blob`. Use `--fileid FILE_ID` with `--reload` or
-`--replace-blob` when the file ID should be supplied explicitly; it replaces
-any file IDs extracted from the Teamwork task. The shorthand `--FILE_ID` is
-also supported immediately after the operation flag, for example
-`--reload --2756788` or `--replace-blob --2756788`. With the generic form,
-use `--operation reload --2756788`. `--feed FEED_ID` and `--adapter ADAPTER_ID`
-override the corresponding values extracted from the Teamwork task; `--feedid`
-and `--adapterid` are aliases. Compact forms such as `--feed396`,
-`--adapter396`, and `--2756788` are also supported. Feed and adapter overrides
-can be used with any operation, but a file override still requires `--reload`
-or `--replace-blob`.
+### Force operation descriptions
+
+- **`--reload`** — Forces a reload/reprocess request and uses the normal reload
+  template. Use `--fileid FILE_ID` or the `--FILE_ID` shorthand when the file ID
+  should be supplied explicitly; an explicit file ID replaces IDs extracted from
+  the Teamwork task.
+- **`--replace-blob`** — Forces a blob replacement while using the reload
+  template. It marks the request as `For Reload / BLOB Update` and adds the
+  `BLOB Update` Teamwork tag. File ID overrides work the same way as for
+  `--reload`.
+- **`--delete`** — Forces a delete request. The command still prompts for delete
+  template mode `1` or `2`, because the selected mode determines which delete
+  template is rendered.
+- **`--rename`** — Forces a filename-change request. The Teamwork task must still
+  provide the source and destination filenames, and rename processing still uses
+  the read-only Oracle filename lookup.
+- **`--reload-delete`** — Forces a combined request with separate reload and
+  delete file ID lists. Use `Reload File IDs: ...` and `Delete File IDs: ...` in
+  the task. This mode creates one GitHub issue with separate SQL sections and
+  does not support `--fileid`.
+
+`--feed FEED_ID` and `--adapter ADAPTER_ID` override the corresponding values
+extracted from the Teamwork task; `--feedid` and `--adapterid` are aliases.
+Compact forms such as `--feed396`, `--adapter396`, and `--2756788` are also
+supported. Feed and adapter overrides can be used with any operation, but a file
+override still requires `--reload` or `--replace-blob`.
 
 If no operation flag is provided, the script fetches and analyzes the Teamwork
 task using Qwen when configured, or local rules otherwise:
