@@ -677,9 +677,39 @@ def detect_ai_adapter(task: dict) -> dict:
     return task
 
 
+def scope_delete_file_ids(task: dict) -> dict:
+    """Exclude comparison IDs from '<target>, duplicate of <reference>' requests."""
+    if task["operation"] != "delete":
+        return task
+
+    target_sections = []
+    pattern = re.compile(
+        r"\b(?:delete|remove)\b(?P<targets>.*?)(?=,\s*(?:a\s+)?duplicates?\s+of\b)",
+        re.IGNORECASE,
+    )
+    for text in (task["title"], task["description"]):
+        target_sections.extend(match.group("targets") for match in pattern.finditer(text))
+
+    if not target_sections:
+        return task
+
+    target_ids = [
+        file_id
+        for file_id in task["file_ids"]
+        if any(
+            re.search(rf"(?<!\d){re.escape(file_id)}(?!\d)", section)
+            for section in target_sections
+        )
+    ]
+    if target_ids:
+        task["file_ids"] = target_ids
+    return task
+
+
 def validate_task(task: dict, analysis: dict) -> dict:
     task = dict(task)
     task.update(analysis)
+    task = scope_delete_file_ids(task)
     missing = [
         name
         for name, value in (
@@ -709,7 +739,7 @@ def add_teamwork_tags(task: dict) -> None:
 
 def choose_delete_mode() -> str:
     while True:
-        choice = input("Delete mode: choose 1 (delete1.txt) or 2 (delete2.txt): ").strip()
+        choice = input("Delete mode: choose 1 (CREATE) or 2 (INSERT): ").strip()
         if choice in {"1", "2"}:
             return choice
         print("Invalid choice. Enter 1 for delete1.txt or 2 for delete2.txt.")

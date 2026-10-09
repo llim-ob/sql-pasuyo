@@ -201,7 +201,9 @@ Examples:
   `--reload`.
 - **`--delete`** — Forces a delete request. The command still prompts for delete
   template mode `1` or `2`, because the selected mode determines which delete
-  template is rendered.
+  template is rendered. For wording such as
+  `Please delete 2786163, duplicate of 2598103`, only `2786163` is included in
+  the delete SQL; the ID after `duplicate of` is treated as a reference.
 - **`--rename`** — Forces a filename-change request. The Teamwork task must still
   provide the source and destination filenames, and rename processing still uses
   the read-only Oracle filename lookup.
