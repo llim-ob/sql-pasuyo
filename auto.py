@@ -145,6 +145,27 @@ def filename_after(text: str, label: str) -> str:
     return ""
 
 
+def filename_pairs(text: str) -> list[tuple[str, str]]:
+    """Extract ordered filename changes from inline or labelled requests."""
+    pairs = []
+    # Teamwork descriptions may preserve Markdown escapes such as ``\_``.
+    # They are presentation escapes, not part of the production filename.
+    text = re.sub(r"\\([_.-])", r"\1", text)
+    inline_pattern = re.compile(
+        r"\bfrom\s*:?\s*([A-Za-z0-9_.-]+)\s+to\s*:?\s*([A-Za-z0-9_.-]+)",
+        re.IGNORECASE,
+    )
+    for match in inline_pattern.finditer(text):
+        pairs.append((match.group(1), match.group(2)))
+
+    if pairs:
+        return list(dict.fromkeys(pairs))
+
+    source = filename_after(text, "from")
+    destination = filename_after(text, "to")
+    return [(source, destination)] if source and destination else []
+
+
 def extract_task(task_id: str, payload: dict) -> dict:
     data = payload.get("task", payload)
     if not isinstance(data, dict):
@@ -196,6 +217,7 @@ def extract_task(task_id: str, payload: dict) -> dict:
         if candidate not in file_ids:
             file_ids.append(candidate)
 
+    rename_pairs = filename_pairs(source_text)
     return {
         "task_id": task_id,
         "title": title,
@@ -203,8 +225,9 @@ def extract_task(task_id: str, payload: dict) -> dict:
         "feed_id": str(feed_id) if feed_id else "",
         "adapter_id": str(adapter_id) if adapter_id else "",
         "file_ids": list(dict.fromkeys(file_ids)),
-        "rename_from": filename_after(source_text, "from"),
-        "rename_to": filename_after(source_text, "to"),
+        "rename_from": rename_pairs[0][0] if rename_pairs else "",
+        "rename_to": rename_pairs[0][1] if rename_pairs else "",
+        "rename_pairs": rename_pairs,
     }
 
 
@@ -305,13 +328,24 @@ def analyze_task_hardcoded(task: dict) -> dict:
     def has_reload(words: list[str]) -> bool:
         return has_any(words, {"reload", "reprocess", "retry", "rerun"}) or has_phrase(words, ("re", "-", "run"))
 
+    def has_filename_change(words: list[str]) -> bool:
+        return (
+            has_any(words, {"rename", "renamed"})
+            or has_phrase(words, ("change", "filename"))
+            or has_phrase(words, ("change", "file", "name"))
+            or has_phrase(words, ("update", "filename"))
+            or has_phrase(words, ("update", "file", "name"))
+        )
+
     all_words = title_words + description_words
     if has_any(all_words, {"delete", "deletion", "remove"}) and (
         has_reload(all_words) or has_phrase(all_words, ("replace", "blob"))
     ):
         return analyze_reload_delete(task)
 
-    if has_any(title_words, {"delete", "deletion", "remove"}):
+    if has_rename_pair or has_filename_change(all_words):
+        operation = "rename"
+    elif has_any(title_words, {"delete", "deletion", "remove"}):
         operation = "delete"
     elif has_any(title_words, {"rename", "renamed"}) or has_phrase(title_words, ("change", "filename")):
         operation = "rename"
@@ -499,6 +533,7 @@ def append_database_file_extension(task: dict) -> dict:
 
     connection = None
     extensions = set()
+    extensions_by_file = {}
     try:
         dsn = oracledb.makedsn(
             required["DB_HOST"],
@@ -534,7 +569,9 @@ def append_database_file_extension(task: dict) -> dict:
                     raise RuntimeError(
                         f"Filename for file ID {file_id} has no file extension"
                     )
-                extensions.add(extension.lower())
+                extension = extension.lower()
+                extensions.add(extension)
+                extensions_by_file[str(file_id)] = extension
     except oracledb.Error as exc:
         raise RuntimeError(f"Read-only Oracle filename lookup failed: {exc}") from exc
     finally:
@@ -547,17 +584,31 @@ def append_database_file_extension(task: dict) -> dict:
             f"found: {', '.join(sorted(extensions)) or 'none'}"
         )
 
+    def append_extension(filename: str, extension: str) -> str:
+        filename = filename.strip()
+        current_suffix = Path(filename).suffix
+        expected_suffix = f".{extension}"
+        if current_suffix.lower() != expected_suffix:
+            filename = (
+                f"{filename}{expected_suffix}"
+                if not current_suffix
+                else f"{filename[:-len(current_suffix)]}{expected_suffix}"
+            )
+        return filename
+
+    rename_pairs = task.get("rename_pairs", [])
+    if len(rename_pairs) > 1:
+        task["rename_pairs"] = [
+            (source, append_extension(destination, extensions_by_file[str(file_id)]))
+            for file_id, (source, destination) in zip(task["file_ids"], rename_pairs)
+        ]
+        task["rename_to"] = task["rename_pairs"][0][1]
+        return task
+
     extension = next(iter(extensions))
-    filename = task["rename_to"].strip()
-    current_suffix = Path(filename).suffix
-    expected_suffix = f".{extension}"
-    if current_suffix.lower() != expected_suffix:
-        filename = (
-            f"{filename}{expected_suffix}"
-            if not current_suffix
-            else f"{filename[:-len(current_suffix)]}{expected_suffix}"
-        )
-    task["rename_to"] = filename
+    task["rename_to"] = append_extension(task["rename_to"], extension)
+    if rename_pairs:
+        task["rename_pairs"] = [(rename_pairs[0][0], task["rename_to"])]
     return task
 
 
@@ -724,6 +775,12 @@ def validate_task(task: dict, analysis: dict) -> dict:
         raise ValueError(f"Task is missing required {', '.join(missing)}")
     if task["operation"] == "rename" and not task["rename_to"]:
         raise ValueError("Rename task is missing the destination filename (To: ...)")
+    rename_pairs = task.get("rename_pairs", [])
+    if task["operation"] == "rename" and len(rename_pairs) > 1 and len(rename_pairs) != len(task["file_ids"]):
+        raise ValueError(
+            "Rename requests with multiple from/to filename pairs must have "
+            "one file ID for each pair"
+        )
     return task
 
 
@@ -759,6 +816,19 @@ def render_reference_template(task: dict) -> str:
                 f"{render_reference_template(operation_task)}"
             )
         return "\n\n".join(requests)
+    rename_pairs = task.get("rename_pairs", [])
+    rename_updates = (
+        "UPDATE carrier_file_workflow SET filename='"
+        f"{task['rename_to']}', processdate = '', processstatus = '',is_export='' "
+        f"WHERE fileid IN ({', '.join(task['file_ids'])});"
+    )
+    if task["operation"] == "rename" and len(rename_pairs) > 1:
+        rename_updates = "\n".join(
+            "UPDATE carrier_file_workflow SET filename='"
+            f"{filename}', processdate = '', processstatus = '',is_export='' "
+            f"WHERE fileid IN ({file_id});"
+            for file_id, (_, filename) in zip(task["file_ids"], rename_pairs)
+        )
     template_name = (
         f"delete{choose_delete_mode()}.txt" if task["operation"] == "delete" else f"{task['operation']}.txt"
     )
@@ -769,8 +839,9 @@ def render_reference_template(task: dict) -> str:
         "{feed_id}": task["feed_id"],
         "{adapter_id}": task["adapter_id"],
         "{detail_table}": detail_table_name(task["adapter_id"]),
-        "{fileids}": ",".join(task["file_ids"]),
+        "{fileids}": ", ".join(task["file_ids"]),
         "{filename}": task["rename_to"],
+        "{rename_updates}": rename_updates,
         "{request_details}": task.get("request_details", "For Reload"),
     }
     for placeholder, value in replacements.items():
@@ -925,7 +996,12 @@ def main() -> int:
         print(f"AI Adapter: {'yes' if task.get('is_ai_adapter') else 'no'}")
         print(f"Table: {detail_table_name(task['adapter_id'])}")
         if task["operation"] == "rename":
-            print(f"Rename destination: {task['rename_to']}")
+            rename_pairs = task.get("rename_pairs", [])
+            if len(rename_pairs) > 1:
+                destinations = ", ".join(destination for _, destination in rename_pairs)
+                print(f"Rename destinations: {destinations}")
+            else:
+                print(f"Rename destination: {task['rename_to']}")
         print(f"")
         print(f"CHECK ALWAYS THE QUERY IN THE ISSUE BEFORE SUBMITTING IT")
         print(f"Issue created: {create_github_issue(task, request_text)}")

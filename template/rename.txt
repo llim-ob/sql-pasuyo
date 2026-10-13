@@ -1,4 +1,4 @@
-Request Details: For Reload 
+Request Details: For Reload / For Rename
 
 Feedid: {feed_id}
 Adapter: {adapter_id}
@@ -7,7 +7,7 @@ DELETE FROM ecs_header WHERE fileid IN ({fileids});
 
 DELETE FROM {detail_table} WHERE fileid IN ({fileids});
 
-UPDATE carrier_file_workflow SET filename='{filename}', processdate = '', processstatus = '',is_export='' WHERE fileid IN ({fileids});
+{rename_updates}
 commit;
 
 login to ssh into Comrec Production server

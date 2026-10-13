@@ -88,6 +88,27 @@ From: OLD_FILENAME
 To: NEW_FILENAME
 ```
 
+For multiple file-specific renames, the file IDs can be listed first and each
+rename can be written on its own line:
+
+```text
+Please update file names for 2786408, 2786409
+
+from CGI_UL800400_08262026 to UTA_UL800400_08262026
+from CGI_UL800400_09262026 to UTA_UL800400_09262026
+```
+
+The pairs are matched in order with the file IDs. The generated issue contains
+one SQL template block with one rename update for each file ID. A single
+`from ... to ...` pair can still be used for one or more file IDs, as in the
+legacy format.
+
+For multiple pairs, the CLI summary prints all destination filenames under
+`Rename destinations`.
+
+Markdown-escaped filename punctuation, such as `CGI\_UL800400...`, is also
+accepted when the task description comes from Teamwork.
+
 The description can also use natural-language filename changes:
 
 ```text
@@ -366,7 +387,7 @@ Teamwork custom-field endpoint so custom-field values with names such as
 | Feed ID | API `feedId`, a custom field named `Feed ID`, `Feed ID: 396`, or `Feed 396` |
 | Adapter ID | API `adapterId`, a custom field named `Adapter ID`, or `Adapter ID: 396` |
 | File ID | `File ID: 2756788`, `FileID 2756788`, `File #2756788`, `File (2756788)`, `File 2756788`, `blob for 2756788`, `for 2756788`, `2780005 - 09/23/2026`, `Please check files: 123213 1232131 81293 123123`, `Please check files: 123213, 1232131`, or a reload list after `following file id due to Error status.` |
-| Rename source | `From: OLD_FILENAME` |
+| Rename source | `From: OLD_FILENAME`, or `from OLD_FILENAME to NEW_FILENAME` |
 | Rename destination | `To: NEW_FILENAME`, or `from OLD_FILENAME to NEW_FILENAME` |
 
 The script stops before creating the issue if feed ID, adapter ID, file ID, or title is missing. Rename operations also require a destination filename and the Oracle read-only filename lookup settings.
