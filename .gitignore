@@ -2,3 +2,5 @@ __pycache__
 .playwright-mcp
 .venv
 .env
+.serena
+docs

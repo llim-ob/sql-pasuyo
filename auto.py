@@ -338,6 +338,15 @@ def analyze_task_hardcoded(task: dict) -> dict:
         )
 
     all_words = title_words + description_words
+    if "ccs" in all_words and has_any(all_words, {"delete", "deletion", "remove"}):
+        return {
+            "operation": "ccs-delete",
+            "rename_to": "",
+            "request_details": "",
+            "rationale": "Matched CCS delete operation rules.",
+            "analyzer": "hardcoded",
+        }
+
     if has_any(all_words, {"delete", "deletion", "remove"}) and (
         has_reload(all_words) or has_phrase(all_words, ("replace", "blob"))
     ):
@@ -410,7 +419,7 @@ def analyze_task(task: dict, operation: str | None = None) -> dict:
     # Strong local filename triggers must remain deterministic even when Qwen
     # is configured. Qwen is still used for wording not covered by these rules.
     local_analysis = analyze_task_hardcoded(task)
-    if local_analysis["operation"] in {"rename", "reload-delete"}:
+    if local_analysis["operation"] in {"rename", "reload-delete", "ccs-delete"}:
         return local_analysis
     if not QWEN_API_KEY:
         return local_analysis
@@ -730,15 +739,20 @@ def detect_ai_adapter(task: dict) -> dict:
 
 def scope_delete_file_ids(task: dict) -> dict:
     """Exclude comparison IDs from '<target>, duplicate of <reference>' requests."""
-    if task["operation"] != "delete":
+    if task["operation"] not in {"delete", "ccs-delete"}:
         return task
 
     target_sections = []
+    duplicate_separator = r",\s*(?:a\s+)?duplicates?\s+of\b"
+    texts = [task["title"], task["description"]]
+    if task["operation"] == "ccs-delete":
+        duplicate_separator += r"|\s+(?:as\s+)?(?:(?:this\s+)?is\s+)?(?:a\s+)?duplicates?\s+of\b"
+        texts = [f"{task['title']}\n{task['description']}"]
     pattern = re.compile(
-        r"\b(?:delete|remove)\b(?P<targets>.*?)(?=,\s*(?:a\s+)?duplicates?\s+of\b)",
-        re.IGNORECASE,
+        rf"\b(?:delete|remove)\b(?P<targets>.*?)(?=(?:{duplicate_separator}))",
+        re.IGNORECASE | (re.DOTALL if task["operation"] == "ccs-delete" else 0),
     )
-    for text in (task["title"], task["description"]):
+    for text in texts:
         target_sections.extend(match.group("targets") for match in pattern.finditer(text))
 
     if not target_sections:
@@ -761,16 +775,14 @@ def validate_task(task: dict, analysis: dict) -> dict:
     task = dict(task)
     task.update(analysis)
     task = scope_delete_file_ids(task)
-    missing = [
-        name
-        for name, value in (
+    required_fields = [("file ID", task["file_ids"]), ("title", task["title"])]
+    if task["operation"] != "ccs-delete":
+        required_fields = [
             ("feed ID", task["feed_id"]),
             ("adapter ID", task["adapter_id"]),
-            ("file ID", task["file_ids"]),
-            ("title", task["title"]),
-        )
-        if not value
-    ]
+            *required_fields,
+        ]
+    missing = [name for name, value in required_fields if not value]
     if missing:
         raise ValueError(f"Task is missing required {', '.join(missing)}")
     if task["operation"] == "rename" and not task["rename_to"]:
@@ -830,7 +842,11 @@ def render_reference_template(task: dict) -> str:
             for file_id, (_, filename) in zip(task["file_ids"], rename_pairs)
         )
     template_name = (
-        f"delete{choose_delete_mode()}.txt" if task["operation"] == "delete" else f"{task['operation']}.txt"
+        "ccs_delete.txt"
+        if task["operation"] == "ccs-delete"
+        else f"delete{choose_delete_mode()}.txt"
+        if task["operation"] == "delete"
+        else f"{task['operation']}.txt"
     )
     if task["operation"] == "reload" and task.get("is_ai_adapter", False):
         template_name = "ai_reload.txt"
@@ -838,7 +854,7 @@ def render_reference_template(task: dict) -> str:
     replacements = {
         "{feed_id}": task["feed_id"],
         "{adapter_id}": task["adapter_id"],
-        "{detail_table}": detail_table_name(task["adapter_id"]),
+        "{detail_table}": detail_table_name(task["adapter_id"]) if task["adapter_id"] else "",
         "{fileids}": ", ".join(task["file_ids"]),
         "{filename}": task["rename_to"],
         "{rename_updates}": rename_updates,
@@ -994,7 +1010,8 @@ def main() -> int:
             for operation, file_ids in task["file_ids_by_operation"].items():
                 print(f"{operation.capitalize()} File IDs: {', '.join(file_ids)}")
         print(f"AI Adapter: {'yes' if task.get('is_ai_adapter') else 'no'}")
-        print(f"Table: {detail_table_name(task['adapter_id'])}")
+        if task["operation"] != "ccs-delete":
+            print(f"Table: {detail_table_name(task['adapter_id'])}")
         if task["operation"] == "rename":
             rename_pairs = task.get("rename_pairs", [])
             if len(rename_pairs) > 1:

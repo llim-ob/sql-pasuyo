@@ -75,7 +75,8 @@ Keep `.env` private. Never commit API keys or tokens.
 
 ### 3. Prepare the Teamwork task
 
-The Teamwork task title or description should include:
+For reload, rename, and ordinary delete requests, the Teamwork task title or
+description should include:
 
 - Feed ID, for example `Feed ID: 396` or `Feed 396`
 - Adapter ID, for example `Adapter ID: 396`
@@ -121,6 +122,20 @@ filename in `carrier_file_workflow` using each extracted file ID, reads its `fil
 and appends/replaces that extension on the requested destination, for example `NEW_FILENAME.xlsx`.
 The database lookup uses only `SELECT filename ... WHERE fileid = :fileid`; it does not update,
 delete, commit, or otherwise modify the production database.
+
+For CCS duplicate-removal requests, include `CCS`, a delete/remove instruction,
+and the target file ID. Feed ID and Adapter ID are not required. If the request
+names a duplicate reference, the ID after `duplicate of` is not included in the
+generated SQL:
+
+```text
+Protective CCS - Remove Duplicate - req by Jenna 10302026
+
+Please remove ID 2784761 as this is a duplicate of 2785166
+```
+
+This renders the CCS cleanup statements from `template/ccs_delete.txt` for
+`2784761` only.
 
 ### Oracle Instant Client requirement
 
@@ -390,7 +405,10 @@ Teamwork custom-field endpoint so custom-field values with names such as
 | Rename source | `From: OLD_FILENAME`, or `from OLD_FILENAME to NEW_FILENAME` |
 | Rename destination | `To: NEW_FILENAME`, or `from OLD_FILENAME to NEW_FILENAME` |
 
-The script stops before creating the issue if feed ID, adapter ID, file ID, or title is missing. Rename operations also require a destination filename and the Oracle read-only filename lookup settings.
+The script stops before creating the issue if feed ID, adapter ID, file ID, or
+title is missing for operations that require them. CCS delete requests require
+only a file ID and title. Rename operations also require a destination filename
+and the Oracle read-only filename lookup settings.
 
 Reload requests may also contain a bare list of file IDs, with one numeric ID
 per line, after the error-status sentence. For example, the IDs in
@@ -413,6 +431,7 @@ them into one operation or combine their file IDs. For other requests, if
 - `reload` for replacing or reprocessing a blob
 - `rename` for changing a filename
 - `delete` for removing data
+- `ccs-delete` for CCS duplicate removal; this is selected locally and is not sent to Qwen
 
 Without Qwen, local deterministic rules classify the title and description. Unmatched requests default to `reload`.
 
@@ -429,6 +448,7 @@ Operation templates are stored in `template/`:
 | Rename | `template/rename.txt` |
 | Delete mode 1 | `template/delete1.txt` |
 | Delete mode 2 | `template/delete2.txt` |
+| CCS delete | `template/ccs_delete.txt` |
 
 The selected template is filled with:
 
