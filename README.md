@@ -116,6 +116,18 @@ The description can also use natural-language filename changes:
 Update filename from OLD_FILENAME to NEW_FILENAME
 ```
 
+For example, this Teamwork description is supported:
+
+```text
+Please update file name for 2798217 from CO66__10182026_10242026 to CO66_10182026_10242026.
+```
+
+Numeric parts of filenames are not treated as additional file IDs:
+
+```text
+Please update file name for 2796898 from 634263_10232026 to 1034043_10232026. Was entered incorrectly.
+```
+
 The phrases `update file name`, `update filename`, `from OLD_FILENAME to NEW_FILENAME`,
 and their equivalent title forms trigger rename classification. The script looks up the existing
 filename in `carrier_file_workflow` using each extracted file ID, reads its `filename` column,

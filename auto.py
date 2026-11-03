@@ -141,7 +141,7 @@ def filename_after(text: str, label: str) -> str:
                 if not (char.isalnum() or char in "_.-"):
                     break
                 filename.append(char)
-            return "".join(filename)
+            return "".join(filename).rstrip(".,;:!?)]}")
     return ""
 
 
@@ -156,7 +156,7 @@ def filename_pairs(text: str) -> list[tuple[str, str]]:
         re.IGNORECASE,
     )
     for match in inline_pattern.finditer(text):
-        pairs.append((match.group(1), match.group(2)))
+        pairs.append((match.group(1), match.group(2).rstrip(".,;:!?)]}")))
 
     if pairs:
         return list(dict.fromkeys(pairs))
@@ -182,6 +182,7 @@ def extract_task(task_id: str, payload: dict) -> dict:
     if isinstance(raw_file_ids, (str, int)):
         raw_file_ids = [raw_file_ids]
     file_ids = [str(value) for value in raw_file_ids if value]
+    text_explicit_file_ids = set()
     tokens = text_tokens(source_text)
     for index, token in enumerate(tokens):
         label = token.lower()
@@ -193,14 +194,17 @@ def extract_task(task_id: str, payload: dict) -> dict:
             file_id = numeric_after(tokens, index, allow_id=label == "file")
             if file_id:
                 file_ids.append(file_id)
+                text_explicit_file_ids.add(file_id)
         elif label == "blob":
             file_id = numeric_after(tokens, index, allow_for=True)
             if file_id:
                 file_ids.append(file_id)
+                text_explicit_file_ids.add(file_id)
         elif label == "for":
             file_id = numeric_after(tokens, index)
             if file_id:
                 file_ids.append(file_id)
+                text_explicit_file_ids.add(file_id)
         if token.isdigit() and len(tokens) >= index + 7:
             separator, month, slash1, day, slash2, year = tokens[index + 1:index + 7]
             if (
@@ -209,15 +213,26 @@ def extract_task(task_id: str, payload: dict) -> dict:
                 and 1 <= len(month) <= 2 and 1 <= len(day) <= 2 and len(year) == 4
             ):
                 file_ids.append(token)
+                text_explicit_file_ids.add(token)
 
     # Fallback: scan the entire source text for any standalone 7-digit numbers
     # that haven't already been captured, treating them as file IDs.
-    for match in re.finditer(r'(?<!\d)(\d{7})(?!\d)', source_text):
+    for match in re.finditer(r"(?<![A-Za-z0-9_.-])(\d{7})(?![A-Za-z0-9_.-])", source_text):
         candidate = match.group(1)
         if candidate not in file_ids:
             file_ids.append(candidate)
 
     rename_pairs = filename_pairs(source_text)
+    filename_component_ids = {
+        component
+        for filename in (*[pair[0] for pair in rename_pairs], *[pair[1] for pair in rename_pairs])
+        for component in re.findall(r"(?<!\d)(\d{7})(?!\d)", filename)
+    }
+    file_ids = [
+        file_id
+        for file_id in file_ids
+        if file_id not in filename_component_ids or file_id in text_explicit_file_ids
+    ]
     return {
         "task_id": task_id,
         "title": title,
