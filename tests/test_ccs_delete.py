@@ -3,7 +3,7 @@ import unittest
 from unittest.mock import patch
 
 import auto
-from auto import analyze_task_hardcoded, render_reference_template, validate_task
+from auto import analyze_task_hardcoded, extract_task, render_reference_template, validate_task
 
 
 CCS_TASK = {
@@ -35,7 +35,7 @@ DELETE FROM PIMAGECCS WHERE IMAGEID in (2784761);
 DELETE FROM PIMAGECATALOG WHERE IMAGEID in (2784761);
 DELETE FROM TXNITEM WHERE IMAGEID in (2784761);
 DELETE FROM CCSDETAIL WHERE IMAGEID in (2784761);
-COMMIT
+COMMIT;
 ```""",
         )
 
@@ -86,6 +86,47 @@ COMMIT
         validated = validate_task(task, analyze_task_hardcoded(task))
 
         self.assertEqual(validated["file_ids"], ["2784761", "2785166"])
+
+    def test_normal_delete_keeps_only_files_before_duplicate_list(self):
+        task = extract_task(
+            "123",
+            {
+                "task": {
+                    "name": "Remove duplicate files",
+                    "description": (
+                        "Please remove files 2730444 & 2676532. "
+                        "Those files are duplicates of 2669779 & 2724562"
+                    ),
+                    "feedId": "396",
+                    "adapterId": "396",
+                }
+            },
+        )
+        validated = validate_task(task, analyze_task_hardcoded(task))
+
+        validated["delete_mode"] = "1"
+        rendered = render_reference_template(validated)
+
+        self.assertEqual(validated["file_ids"], ["2730444", "2676532"])
+        self.assertIn("fileid IN (2730444, 2676532)", rendered)
+        self.assertNotIn("2669779", rendered)
+        self.assertNotIn("2724562", rendered)
+
+    def test_extract_task_accepts_quoted_file_ids(self):
+        task = extract_task(
+            "123",
+            {"task": {"name": "Remove files", "description": 'Remove "2730444" & \'2676532\'.'}},
+        )
+
+        self.assertEqual(task["file_ids"], ["2730444", "2676532"])
+
+    def test_extract_task_ignores_numeric_filename_components(self):
+        task = extract_task(
+            "123",
+            {"task": {"name": "Review files", "description": "foo_2730444 and 2730444.csv"}},
+        )
+
+        self.assertEqual(task["file_ids"], [])
 
     def test_main_does_not_calculate_ccs_detail_table(self):
         task = {**CCS_TASK, "task_id": "123"}

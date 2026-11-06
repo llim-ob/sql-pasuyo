@@ -217,7 +217,11 @@ def extract_task(task_id: str, payload: dict) -> dict:
 
     # Fallback: scan the entire source text for any standalone 7-digit numbers
     # that haven't already been captured, treating them as file IDs.
-    for match in re.finditer(r"(?<![A-Za-z0-9_.-])(\d{7})(?![A-Za-z0-9_.-])", source_text):
+    file_id_pattern = (
+        r"(?<![A-Za-z0-9_.-])(\d{7})"
+        r"(?=$|[\s,;:&!?()\[\]{}\"']|\.(?=\s|$))"
+    )
+    for match in re.finditer(file_id_pattern, source_text):
         candidate = match.group(1)
         if candidate not in file_ids:
             file_ids.append(candidate)
@@ -505,6 +509,135 @@ def analyze_task(task: dict, operation: str | None = None) -> dict:
     }
 
 
+def resolve_delete_mode(task: dict) -> dict:
+    """Select CREATE or INSERT from the target detail table's deleted table."""
+    if task["operation"] == "ccs-delete":
+        return task
+    if task["operation"] == "reload-delete":
+        delete_task = {
+            **task,
+            "operation": "delete",
+            "file_ids": task["file_ids_by_operation"]["delete"],
+        }
+        resolved = resolve_delete_mode(delete_task)
+        return {
+            **task,
+            "delete_mode": resolved["delete_mode"],
+            "delete_detail_table": resolved["detail_table"],
+        }
+    if task["operation"] != "delete":
+        return task
+
+    try:
+        import oracledb
+    except ImportError as exc:
+        raise RuntimeError(
+            "The oracledb package is required for delete mode lookup; install requirements.txt"
+        ) from exc
+
+    if os.getenv("DB_CONNECTION", "oracle").strip().lower() != "oracle":
+        raise RuntimeError("DB_CONNECTION must be oracle for delete mode lookup")
+
+    required = {
+        "DB_DATABASE": os.getenv("DB_DATABASE", "").strip(),
+        "DB_HOST": os.getenv("DB_HOST", "").strip(),
+        "DB_PASSWORD": os.getenv("DB_PASSWORD", ""),
+        "DB_PORT": os.getenv("DB_PORT", "").strip(),
+        "DB_USERNAME": os.getenv("DB_USERNAME", "").strip(),
+    }
+    missing = [name for name, value in required.items() if not value]
+    if missing:
+        raise RuntimeError(
+            "Delete mode lookup requires database settings: " + ", ".join(missing)
+        )
+
+    try:
+        port = int(required["DB_PORT"])
+    except ValueError as exc:
+        raise RuntimeError("DB_PORT must be an integer") from exc
+
+    client_lib = os.getenv("DB_ORACLE_CLIENT_LIB", "").strip()
+    try:
+        if oracledb.is_thin_mode():
+            if client_lib:
+                oracledb.init_oracle_client(lib_dir=client_lib)
+            else:
+                oracledb.init_oracle_client()
+    except oracledb.Error as exc:
+        raise RuntimeError(
+            "AIMSPRD requires python-oracledb Thick mode, but Oracle Instant Client "
+            "could not be loaded. Install Oracle Instant Client and set "
+            "DB_ORACLE_CLIENT_LIB to its directory in .env."
+        ) from exc
+
+    connection = None
+    detail_tables = set()
+    try:
+        dsn = oracledb.makedsn(
+            required["DB_HOST"],
+            port,
+            service_name=required["DB_DATABASE"],
+        )
+        connection = oracledb.connect(
+            user=required["DB_USERNAME"],
+            password=required["DB_PASSWORD"],
+            dsn=dsn,
+        )
+        with connection.cursor() as cursor:
+            for file_id in task["file_ids"]:
+                try:
+                    numeric_file_id = int(file_id)
+                except (TypeError, ValueError) as exc:
+                    raise RuntimeError(
+                        f"Invalid file ID for delete mode lookup: {file_id}"
+                    ) from exc
+
+                cursor.execute(
+                    "SELECT detail_table FROM ecs_header WHERE fileid = :file_id",
+                    file_id=numeric_file_id,
+                )
+                row = cursor.fetchone()
+                if not row or not row[0]:
+                    raise RuntimeError(
+                        f"No detail table found in ecs_header for file ID {file_id}"
+                    )
+                detail_table = str(row[0]).strip().upper()
+                if not re.fullmatch(r"(?:ECS|EPS)_DETAIL_TYPE\d+", detail_table):
+                    raise RuntimeError(
+                        f"Invalid detail table for file ID {file_id}: {row[0]}"
+                    )
+                detail_tables.add(detail_table)
+
+            if len(detail_tables) != 1:
+                raise ValueError(
+                    "Delete file IDs must use the same detail table; found: "
+                    + ", ".join(sorted(detail_tables))
+                )
+
+            detail_table = next(iter(detail_tables))
+            deleted_table = f"{detail_table}_DELETED"
+            cursor.execute(
+                "SELECT 1 FROM user_tables WHERE table_name = :table_name",
+                table_name=deleted_table,
+            )
+            deleted_table_exists = cursor.fetchone() is not None
+            if not deleted_table_exists:
+                delete_mode = "1"
+                return {**task, "delete_mode": delete_mode, "detail_table": detail_table}
+            try:
+                cursor.execute(f"SELECT * FROM {deleted_table} WHERE 1 = 0")
+                delete_mode = "2"
+            except oracledb.Error as exc:
+                raise RuntimeError(f"Could not check whether {deleted_table} exists") from exc
+    except oracledb.Error as exc:
+        raise RuntimeError(f"Read-only Oracle delete mode lookup failed: {exc}") from exc
+    finally:
+        if connection is not None:
+            connection.close()
+
+    return {**task, "delete_mode": delete_mode, "detail_table": detail_table}
+
+
 def append_database_file_extension(task: dict) -> dict:
     """Append the production filename extension using a read-only Oracle query."""
     if task["operation"] != "rename":
@@ -758,7 +891,10 @@ def scope_delete_file_ids(task: dict) -> dict:
         return task
 
     target_sections = []
-    duplicate_separator = r",\s*(?:a\s+)?duplicates?\s+of\b"
+    duplicate_separator = (
+        r",\s*(?:a\s+)?duplicates?\s+of\b"
+        r"|\.\s+(?:those\s+)?files?\s+are\s+duplicates?\s+of\b"
+    )
     texts = [task["title"], task["description"]]
     if task["operation"] == "ccs-delete":
         duplicate_separator += r"|\s+(?:as\s+)?(?:(?:this\s+)?is\s+)?(?:a\s+)?duplicates?\s+of\b"
@@ -821,14 +957,6 @@ def add_teamwork_tags(task: dict) -> None:
         teamwork_add_tag(task["task_id"], tag)
 
 
-def choose_delete_mode() -> str:
-    while True:
-        choice = input("Delete mode: choose 1 (CREATE) or 2 (INSERT): ").strip()
-        if choice in {"1", "2"}:
-            return choice
-        print("Invalid choice. Enter 1 for delete1.txt or 2 for delete2.txt.")
-
-
 def render_reference_template(task: dict) -> str:
     if task["operation"] == "reload-delete":
         requests = []
@@ -838,6 +966,10 @@ def render_reference_template(task: dict) -> str:
                 "operation": operation,
                 "file_ids": task["file_ids_by_operation"][operation],
             }
+            if operation == "delete":
+                operation_task["detail_table"] = task.get("delete_detail_table", "")
+            else:
+                operation_task.pop("detail_table", None)
             requests.append(
                 f"## {operation.capitalize()}\n\n"
                 f"{render_reference_template(operation_task)}"
@@ -856,20 +988,26 @@ def render_reference_template(task: dict) -> str:
             f"WHERE fileid IN ({file_id});"
             for file_id, (_, filename) in zip(task["file_ids"], rename_pairs)
         )
+    delete_mode = task.get("delete_mode", "")
+    if task["operation"] == "delete" and delete_mode not in {"1", "2"}:
+        raise ValueError("delete mode must be resolved before rendering")
     template_name = (
         "ccs_delete.txt"
         if task["operation"] == "ccs-delete"
-        else f"delete{choose_delete_mode()}.txt"
+        else f"delete{delete_mode}.txt"
         if task["operation"] == "delete"
         else f"{task['operation']}.txt"
     )
     if task["operation"] == "reload" and task.get("is_ai_adapter", False):
         template_name = "ai_reload.txt"
     template = (TEMPLATE_DIR / template_name).read_text(encoding="utf-8")
+    detail_table = task.get("detail_table", "")
+    if not detail_table and task["adapter_id"]:
+        detail_table = detail_table_name(task["adapter_id"])
     replacements = {
         "{feed_id}": task["feed_id"],
         "{adapter_id}": task["adapter_id"],
-        "{detail_table}": detail_table_name(task["adapter_id"]) if task["adapter_id"] else "",
+        "{detail_table}": detail_table,
         "{fileids}": ", ".join(task["file_ids"]),
         "{filename}": task["rename_to"],
         "{rename_updates}": rename_updates,
@@ -1013,6 +1151,7 @@ def main() -> int:
         task = validate_task(task, analysis)
         task = append_database_file_extension(task)
         task = detect_ai_adapter(task)
+        task = resolve_delete_mode(task)
         request_text = render_reference_template(task)
         add_teamwork_tags(task)
         print(f"Operation: {task['operation']}")
@@ -1026,7 +1165,10 @@ def main() -> int:
                 print(f"{operation.capitalize()} File IDs: {', '.join(file_ids)}")
         print(f"AI Adapter: {'yes' if task.get('is_ai_adapter') else 'no'}")
         if task["operation"] != "ccs-delete":
-            print(f"Table: {detail_table_name(task['adapter_id'])}")
+            print(
+                "Table: "
+                f"{task.get('detail_table') or task.get('delete_detail_table') or detail_table_name(task['adapter_id'])}"
+            )
         if task["operation"] == "rename":
             rename_pairs = task.get("rename_pairs", [])
             if len(rename_pairs) > 1:

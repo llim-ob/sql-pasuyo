@@ -42,7 +42,7 @@ TW_API_KEY=your_teamwork_api_key # REQUIRED
 # QWEN_API_BASE=
 # QWEN_MODEL=
 
-# Read-only Oracle lookups for rename filenames and AI-adapter reloads
+# Read-only Oracle lookups for delete mode, rename filenames, and AI-adapter reloads
 DB_CONNECTION=oracle
 DB_DATABASE=database
 DB_HOST=dbhost
@@ -63,13 +63,13 @@ Required values:
 | `GITHUB_REPO` | No | GitHub repository. Defaults to `sql-requests`. |
 | `GITHUB_LABEL` | No | Issue label. Defaults to `sql-request`. |
 | `QWEN_API_KEY` | No | Enables Qwen classification. Without it, local rules are used. |
-| `DB_CONNECTION` | Rename or reload | Must be `oracle` when a rename or reload is processed. |
-| `DB_DATABASE` | Rename or reload | Oracle service name, such as `database`. |
-| `DB_HOST` | Rename or reload | Oracle database host. |
-| `DB_PASSWORD` | Rename or reload | Oracle read-only lookup password. |
-| `DB_PORT` | Rename or reload | Oracle listener port, normally `1521`. |
-| `DB_USERNAME` | Rename or reload | Oracle lookup username. |
-| `DB_ORACLE_CLIENT_LIB` | Rename or reload | Directory containing the Oracle Instant Client libraries, such as `libclntsh.dylib`. Required for the older AIMSPRD server. |
+| `DB_CONNECTION` | Rename, delete, or reload | Must be `oracle` when a rename, delete, or reload is processed. |
+| `DB_DATABASE` | Rename, delete, or reload | Oracle service name, such as `database`. |
+| `DB_HOST` | Rename, delete, or reload | Oracle database host. |
+| `DB_PASSWORD` | Rename, delete, or reload | Oracle read-only lookup password. |
+| `DB_PORT` | Rename, delete, or reload | Oracle listener port, normally `1521`. |
+| `DB_USERNAME` | Rename, delete, or reload | Oracle lookup username. |
+| `DB_ORACLE_CLIENT_LIB` | Rename, delete, or reload | Directory containing the Oracle Instant Client libraries, such as `libclntsh.dylib`. Required for the older AIMSPRD server. |
 
 Keep `.env` private. Never commit API keys or tokens.
 
@@ -247,11 +247,15 @@ Examples:
   template. It marks the request as `For Reload / BLOB Update` and adds the
   `BLOB Update` Teamwork tag. File ID overrides work the same way as for
   `--reload`.
-- **`--delete`** — Forces a delete request. The command still prompts for delete
-  template mode `1` or `2`, because the selected mode determines which delete
-  template is rendered. For wording such as
+- **`--delete`** — Forces a delete request. The command automatically selects
+  delete template mode `1` or `2` from the read-only Oracle table lookup. For
+  wording such as
   `Please delete 2786163, duplicate of 2598103`, only `2786163` is included in
   the delete SQL; the ID after `duplicate of` is treated as a reference.
+  Multiple targets are also supported when the description separates them from
+  their references, for example `Please remove files 2730444 & 2676532. Those
+  files are duplicates of 2669779 & 2724562`; only `2730444` and `2676532` are
+  included in the delete SQL.
 - **`--rename`** — Forces a filename-change request. The Teamwork task must still
   provide the source and destination filenames, and rename processing still uses
   the read-only Oracle filename lookup.
@@ -295,13 +299,11 @@ Both commands run the same Teamwork-to-GitHub process.
 
 The URL must contain a numeric task ID in the `/tasks/<id>` path.
 
-For a delete request, the command pauses and asks which delete template to use:
-
-```text
-Delete mode: choose 1 (delete1.txt) or 2 (delete2.txt):
-```
-
-Enter `1` or `2`, then let the command finish.
+For a normal delete request, the command automatically queries
+`ecs_header.Detail_table`, then checks whether `<Detail_table>_DELETED` exists.
+It uses the INSERT template when that table exists and the CREATE template
+otherwise. The lookup is read-only, so no delete or backup SQL is executed by
+`auto.py`.
 
 ### Combined reload and delete requests
 
@@ -316,9 +318,9 @@ Please remove File IDs 2038976, 2038977, 2038975.
 
 Run `paste-tw` normally; combined requests are detected locally, even when Qwen
 is configured. The script creates **one GitHub issue**, with a reload section
-for `2686743` and a delete section for `2038976,2038977,2038975`. It still asks
-for delete mode `1` or `2`, and the reload section still uses the read-only
-AI-adapter lookup and the appropriate reload template.
+for `2686743` and a delete section for `2038976,2038977,2038975`. Delete mode
+is selected automatically from the delete file IDs, while the reload section
+still uses the read-only AI-adapter lookup and the appropriate reload template.
 
 Each operation has its own heading and fenced `sql` code block, so reload and
 delete instructions are displayed separately rather than inside one shared
@@ -366,7 +368,7 @@ Extract feed ID, adapter ID, file IDs, and rename filenames
                  v
 Use explicit operation flag, or analyze task: reload, replace-blob, rename, or delete
                  |
-                 +--> delete: ask for template mode 1 or 2
+                  +--> delete: inspect detail table and select CREATE or INSERT
                  |
                  v
 For reload: inspect carrier_feed_control commandline for an AI_ Python script
@@ -551,9 +553,11 @@ TW_ACCESS_TOKEN=your_teamwork_access_token
 
 Add feed, adapter, and file IDs to the Teamwork title or description. Rename requests also need a `To:` filename.
 
-### Delete prompt does not work
+### Delete mode lookup error
 
-Delete mode is interactive. Run the command from a terminal and enter `1` or `2` when prompted.
+Delete mode is selected automatically from `ecs_header.Detail_table` and the
+corresponding `<Detail_table>_DELETED` table. Check the read-only Oracle settings
+in `.env`, including `DB_ORACLE_CLIENT_LIB` when Thick mode is required.
 
 ### GitHub API error
 
