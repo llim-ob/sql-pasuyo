@@ -894,10 +894,10 @@ def scope_delete_file_ids(task: dict) -> dict:
     duplicate_separator = (
         r",\s*(?:a\s+)?duplicates?\s+of\b"
         r"|\.\s+(?:those\s+)?files?\s+are\s+duplicates?\s+of\b"
+        r"|\s+(?:as\s+)?(?:(?:this\s+)?is\s+)?(?:a\s+)?duplicates?\s+of\b"
     )
     texts = [task["title"], task["description"]]
     if task["operation"] == "ccs-delete":
-        duplicate_separator += r"|\s+(?:as\s+)?(?:(?:this\s+)?is\s+)?(?:a\s+)?duplicates?\s+of\b"
         texts = [f"{task['title']}\n{task['description']}"]
     pattern = re.compile(
         rf"\b(?:delete|remove)\b(?P<targets>.*?)(?=(?:{duplicate_separator}))",

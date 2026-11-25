@@ -8,6 +8,51 @@ The script does not execute SQL, run shell commands, or create a pull request. F
 it performs one read-only Oracle `SELECT` to determine the existing file type before rendering the
 GitHub issue.
 
+## Install the macOS Menu Bar App and Widget
+
+The recommended way to use SQL Pasuyo on a Mac is the native menu bar app. It includes a WidgetKit
+extension that you can add to Notification Center or the desktop. The widget opens the app; enter
+credentials and submit Teamwork task links from the app.
+
+### Requirements
+
+- Keep this repository in a stable location on the Mac. The installed app runs `auto.py` and
+  `.venv/bin/python` from this checkout, so do not move or delete the folder after installation.
+- Install full Xcode and open it once to complete setup. Xcode itself must be installed manually.
+- Homebrew is needed if XcodeGen or Python 3 is missing; the installer uses it to install them.
+
+### Build and install
+
+In Finder, double-click **Install SQL Pasuyo.command** in the repository folder. A Terminal
+window will prepare `.venv`, install `requirements.txt`, install XcodeGen if needed, build the
+app, place it in `~/Applications/SQLPasuyo.app`, and open it. Leave the Terminal window open
+until it reports that installation finished.
+
+You can also run the installer from Terminal:
+
+```bash
+./install-macos-app.sh
+```
+
+To update after changing app code, double-click the same `.command` file again. For distribution
+to other Macs, the app and extension need Developer ID signing and notarization.
+
+On first launch, enter a GitHub token and either a Teamwork API key or OAuth access token, then
+choose **Save credentials**. Credentials are stored in the macOS Keychain. Choose **Edit** to show
+the fields again. Paste a Teamwork task URL, choose an **Operation**, then choose **Create GitHub
+issue**; this creates a live GitHub issue. **Automatic** analyzes the task as usual. Choose Reload,
+Replace blob, Rename, Delete, or Reload and delete to force the matching operation, as with the
+terminal `--operation` option. The Teamwork task still needs the IDs and filenames required by that
+operation. Use **Template documentation** to open a separate window showing the supported templates
+and their placeholders. The app reads optional settings such as Oracle lookup and Qwen configuration
+from the repository's `.env` file. Oracle Instant Client setup is still required for the AIMSPRD
+operations that use Thick mode; see [Oracle Instant Client requirement](#oracle-instant-client-requirement).
+
+To add the widget, open the macOS widget gallery and add **SQL Pasuyo**. It launches the menu bar
+app for credential setup and task submission. Choose **Quit SQL Pasuyo** in the app popover to exit.
+After an issue is created, the popover shows a success confirmation and a
+clickable GitHub issue link.
+
 ## How To Use It
 
 ### 1. Install dependencies
@@ -250,8 +295,10 @@ Examples:
 - **`--delete`** — Forces a delete request. The command automatically selects
   delete template mode `1` or `2` from the read-only Oracle table lookup. For
   wording such as
-  `Please delete 2786163, duplicate of 2598103`, only `2786163` is included in
-  the delete SQL; the ID after `duplicate of` is treated as a reference.
+  `Please delete 2786163, duplicate of 2598103` or
+  `Please remove File ID 2626527, as this is a duplicate of 2613285`, only the
+  requested ID is included in the delete SQL; the ID after `duplicate of` is
+  treated as a reference.
   Multiple targets are also supported when the description separates them from
   their references, for example `Please remove files 2730444 & 2676532. Those
   files are duplicates of 2669779 & 2724562`; only `2730444` and `2676532` are
@@ -477,7 +524,7 @@ Plain reload requests use `Request Details: For Reload`. `--replace-blob`
 requests use `Request Details: For Reload / BLOB Update`.
 
 Reload classification requires the read-only Oracle lookup described above so
-that AI adapter reloads can be distinguished from normal reloads. The lookup
+that AI adapter reloads can be distinguished. The lookup
 uses the feed ID, selects Python commandlines from `carrier_feed_control`, and
 does not update, delete, commit, or otherwise modify the production database.
 

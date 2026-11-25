@@ -1,0 +1,33 @@
+name: SQLPasuyo
+options:
+  bundleIdPrefix: com.objectbright
+  deploymentTarget:
+    macOS: "14.0"
+targets:
+  SQLPasuyo:
+    type: application
+    platform: macOS
+    sources:
+      - path: App
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.objectbright.sqlpasuyo
+      GENERATE_INFOPLIST_FILE: YES
+      INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
+      INFOPLIST_KEY_CFBundleDisplayName: SQL Pasuyo
+      INFOPLIST_KEY_LSUIElement: YES
+      INFOPLIST_KEY_CFBundleURLTypes: "[{CFBundleURLName=com.objectbright.sqlpasuyo,CFBundleURLSchemes=[sqlpasuyo]}]"
+      CODE_SIGNING_ALLOWED: NO
+      SWIFT_VERSION: 5.0
+  SQLPasuyoWidget:
+    type: app-extension
+    platform: macOS
+    sources:
+      - path: Widget
+    dependencies:
+      - target: SQLPasuyo
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.objectbright.sqlpasuyo.widget
+      GENERATE_INFOPLIST_FILE: YES
+      INFOPLIST_KEY_NSExtension_NSExtensionPointIdentifier: com.apple.widgetkit-extension
+      CODE_SIGNING_ALLOWED: NO
+      SWIFT_VERSION: 5.0
