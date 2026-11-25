@@ -14,6 +14,8 @@ import urllib.request
 from html.parser import HTMLParser
 from pathlib import Path
 
+from requests.exceptions import RequestException
+
 from tw_auth import QWEN_API_KEY, qwen_chat, teamwork_add_tag, teamwork_get
 
 BASE_DIR = Path(__file__).parent
@@ -1046,6 +1048,10 @@ def github_request(method: str, path: str, token: str, payload: dict) -> dict:
 
 
 def create_github_issue(task: dict, request_text: str) -> str:
+    return post_github_issue(task["title"], render_issue_body(task, request_text))
+
+
+def post_github_issue(title: str, issue_body: str) -> str:
     token = os.getenv("GITHUB_TOKEN", "")
     if not token:
         raise RuntimeError("GITHUB_TOKEN is required")
@@ -1054,17 +1060,57 @@ def create_github_issue(task: dict, request_text: str) -> str:
         f"/repos/{GITHUB_OWNER}/{GITHUB_REPO}/issues",
         token,
         {
-            "title": task["title"],
-            "body": render_issue_body(task, request_text),
+            "title": title,
+            "body": issue_body,
             "labels": [os.getenv("GITHUB_LABEL", "sql-request")],
         },
     )
     return issue["html_url"]
 
 
+def prepare_request(args: argparse.Namespace) -> tuple[dict, str]:
+    task = parse_teamwork_link(args.teamwork_link)
+    task.update(fetch_task(task["task_id"]))
+    if args.feed_id:
+        task["feed_id"] = args.feed_id
+    if args.adapter_id:
+        task["adapter_id"] = args.adapter_id
+    if args.file_id:
+        task["file_ids"] = [args.file_id]
+    task = validate_task(task, analyze_task(task, args.operation))
+    task = append_database_file_extension(task)
+    task = detect_ai_adapter(task)
+    task = resolve_delete_mode(task)
+    return task, render_reference_template(task)
+
+
+def publish_preview(preview: dict) -> dict:
+    fields = ("task_id", "title", "issue_body")
+    if not isinstance(preview, dict) or any(
+        not isinstance(preview.get(field), str) or not preview[field].strip()
+        for field in fields
+    ) or not (
+        re.fullmatch(r"[0-9]+", preview["task_id"])
+        and isinstance(preview.get("request_details"), str)
+    ):
+        raise ValueError("Invalid prepared request")
+    issue_url = post_github_issue(preview["title"], preview["issue_body"])
+    tag_error = None
+    try:
+        add_teamwork_tags(preview)
+    except (ValueError, RuntimeError, OSError, RequestException) as exc:
+        tag_error = str(exc)
+    return {"issue_url": issue_url, "tag_error": tag_error}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Create a GitHub issue from a Teamwork COMREC task")
-    parser.add_argument("teamwork_link", help="Teamwork task URL")
+    parser.add_argument("teamwork_link", nargs="?", help="Teamwork task URL")
+    app_mode = parser.add_mutually_exclusive_group()
+    app_mode.add_argument("--preview-json", action="store_true", help="Prepare a request as JSON")
+    app_mode.add_argument(
+        "--publish-json", action="store_true", help="Publish a prepared request read from stdin"
+    )
     parser.add_argument(
         "--feed",
         "--feedid",
@@ -1128,6 +1174,18 @@ def main() -> int:
     )
     args = parser.parse_args(normalize_compact_arguments(sys.argv[1:]))
 
+    if args.publish_json:
+        if any((args.teamwork_link, args.operation, args.feed_id, args.adapter_id, args.file_id)):
+            parser.error("--publish-json accepts only the prepared request on stdin")
+        try:
+            print(json.dumps(publish_preview(json.load(sys.stdin))))
+            return 0
+        except (ValueError, RuntimeError, OSError, KeyError) as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
+    if not args.teamwork_link:
+        parser.error("a Teamwork task URL is required")
+
     for option, value in (("feed", args.feed_id), ("adapter", args.adapter_id)):
         if value is not None and (not value.isdigit() or int(value) <= 0):
             parser.error(f"--{option} must be a positive integer")
@@ -1139,20 +1197,21 @@ def main() -> int:
             parser.error("--fileid must be a positive integer")
 
     try:
-        task = {**parse_teamwork_link(args.teamwork_link)}
-        task.update(fetch_task(task["task_id"]))
-        if args.feed_id:
-            task["feed_id"] = args.feed_id
-        if args.adapter_id:
-            task["adapter_id"] = args.adapter_id
-        if args.file_id:
-            task["file_ids"] = [args.file_id]
-        analysis = analyze_task(task, args.operation)
-        task = validate_task(task, analysis)
-        task = append_database_file_extension(task)
-        task = detect_ai_adapter(task)
-        task = resolve_delete_mode(task)
-        request_text = render_reference_template(task)
+        task, request_text = prepare_request(args)
+        if args.preview_json:
+            print(json.dumps({
+                "task_id": task["task_id"].lstrip("0") or "0",
+                "title": task["title"],
+                "operation": (
+                    "replace-blob" if task["operation"] == "reload"
+                    and task["request_details"] == "For Reload / BLOB Update"
+                    else task["operation"]
+                ),
+                "request_details": task["request_details"],
+                "request_text": request_text,
+                "issue_body": render_issue_body(task, request_text),
+            }))
+            return 0
         add_teamwork_tags(task)
         print(f"Operation: {task['operation']}")
         print(f"Analyzer: {task['analyzer']}")
@@ -1180,7 +1239,7 @@ def main() -> int:
         print(f"CHECK ALWAYS THE QUERY IN THE ISSUE BEFORE SUBMITTING IT")
         print(f"Issue created: {create_github_issue(task, request_text)}")
         return 0
-    except (ValueError, RuntimeError, OSError, json.JSONDecodeError) as exc:
+    except (ValueError, RuntimeError, OSError, RequestException) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 

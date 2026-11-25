@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		02B01964273B4812B5672162 /* SQLPasuyoWidget.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 4AAF581CA51C7A69EF0966C6 /* SQLPasuyoWidget.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		10D99F3482243E53F4D63F96 /* TemplateGuideView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA8729A37AF6393C62983341 /* TemplateGuideView.swift */; };
 		497CA86CCC4BC17F53EA7DF7 /* SQLPasuyoWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D0589D53330306A40B197C5 /* SQLPasuyoWidget.swift */; };
 		59F8753C859CFD66639FD3D4 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 70784AFBDDB7142E762B1DE4 /* ContentView.swift */; };
@@ -19,10 +20,24 @@
 			isa = PBXContainerItemProxy;
 			containerPortal = 3E5DA11D56445BEC4A27FE18 /* Project object */;
 			proxyType = 1;
-			remoteGlobalIDString = BF8AA03B24BD6D976AA26A1E;
-			remoteInfo = SQLPasuyo;
+			remoteGlobalIDString = CD888384895B2FEEA344DBBF;
+			remoteInfo = SQLPasuyoWidget;
 		};
 /* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		0DBAE4B308B64036A2AF4604 /* Embed App Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				02B01964273B4812B5672162 /* SQLPasuyoWidget.appex in Embed App Extensions */,
+			);
+			name = "Embed App Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		05CF4D3DC2E01B4AA93C3BCB /* SQLPasuyoApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SQLPasuyoApp.swift; sourceTree = "<group>"; };
@@ -80,10 +95,12 @@
 			buildConfigurationList = 439FD2A43492D6AD42FE8B21 /* Build configuration list for PBXNativeTarget "SQLPasuyo" */;
 			buildPhases = (
 				0187E0BD9465D72DF47EDF07 /* Sources */,
+				0DBAE4B308B64036A2AF4604 /* Embed App Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				CB683917068D7EBE93305B7B /* PBXTargetDependency */,
 			);
 			name = SQLPasuyo;
 			packageProductDependencies = (
@@ -101,7 +118,6 @@
 			buildRules = (
 			);
 			dependencies = (
-				CB683917068D7EBE93305B7B /* PBXTargetDependency */,
 			);
 			name = SQLPasuyoWidget;
 			packageProductDependencies = (
@@ -166,7 +182,7 @@
 /* Begin PBXTargetDependency section */
 		CB683917068D7EBE93305B7B /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
-			target = BF8AA03B24BD6D976AA26A1E /* SQLPasuyo */;
+			target = CD888384895B2FEEA344DBBF /* SQLPasuyoWidget */;
 			targetProxy = D4396C395C6AEB38BCAA78E2 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
@@ -232,11 +248,11 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGN_IDENTITY = "-";
 				COMBINE_HIDPI_IMAGES = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "SQL Pasuyo";
-				INFOPLIST_KEY_CFBundleURLTypes = "[{CFBundleURLName=com.objectbright.sqlpasuyo,CFBundleURLSchemes=[sqlpasuyo]}]";
+				INFOPLIST_FILE = "App-Info.plist";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
 				INFOPLIST_KEY_LSUIElement = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -253,11 +269,11 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGN_IDENTITY = "-";
 				COMBINE_HIDPI_IMAGES = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "SQL Pasuyo";
-				INFOPLIST_KEY_CFBundleURLTypes = "[{CFBundleURLName=com.objectbright.sqlpasuyo,CFBundleURLSchemes=[sqlpasuyo]}]";
+				INFOPLIST_FILE = "App-Info.plist";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
 				INFOPLIST_KEY_LSUIElement = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -336,10 +352,10 @@
 		C96420B259F8AC5E2152B6BC /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGN_IDENTITY = "-";
 				COMBINE_HIDPI_IMAGES = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_NSExtension_NSExtensionPointIdentifier = "com.apple.widgetkit-extension";
+				INFOPLIST_FILE = "Widget-Info.plist";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -354,10 +370,10 @@
 		CDBC73FC5F86D24F48A5D821 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGN_IDENTITY = "-";
 				COMBINE_HIDPI_IMAGES = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_NSExtension_NSExtensionPointIdentifier = "com.apple.widgetkit-extension";
+				INFOPLIST_FILE = "Widget-Info.plist";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",

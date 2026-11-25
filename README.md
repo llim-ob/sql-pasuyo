@@ -1,6 +1,7 @@
 # sql-pasuyo
 
-`sql-pasuyo` converts a Teamwork task link into a GitHub issue containing the SQL and operational instructions for a COMREC request.
+`sql-pasuyo` turns Teamwork task links into SQL request text for COMREC. The macOS app lets you
+preview and copy each request, then optionally publish it as a GitHub issue.
 
 It reads the Teamwork task, determines whether the request is a reload, replace-blob, rename, or delete operation, fills the matching local template, adds the appropriate tags to the Teamwork task, and creates one issue in the configured GitHub repository.
 
@@ -10,21 +11,20 @@ GitHub issue.
 
 ## Install the macOS Menu Bar App and Widget
 
-The recommended way to use SQL Pasuyo on a Mac is the native menu bar app. It includes a WidgetKit
-extension that you can add to Notification Center or the desktop. The widget opens the app; enter
-credentials and submit Teamwork task links from the app.
+SQL Pasuyo runs on macOS 14 or later. Open the workspace from the app, the menu bar icon, or the
+optional desktop or Notification Center widget.
 
 ### Requirements
 
 - Keep this repository in a stable location on the Mac. The installed app runs `auto.py` and
   `.venv/bin/python` from this checkout, so do not move or delete the folder after installation.
 - Install full Xcode and open it once to complete setup. Xcode itself must be installed manually.
-- Homebrew is needed if XcodeGen or Python 3 is missing; the installer uses it to install them.
+- If Python 3 is missing, the installer can install it using Homebrew.
 
 ### Build and install
 
 In Finder, double-click **Install SQL Pasuyo.command** in the repository folder. A Terminal
-window will prepare `.venv`, install `requirements.txt`, install XcodeGen if needed, build the
+window will prepare `.venv`, install `requirements.txt`, build the
 app, place it in `~/Applications/SQLPasuyo.app`, and open it. Leave the Terminal window open
 until it reports that installation finished.
 
@@ -34,24 +34,38 @@ You can also run the installer from Terminal:
 ./install-macos-app.sh
 ```
 
-To update after changing app code, double-click the same `.command` file again. For distribution
+To update after changing app code, choose **Quit SQL Pasuyo** from the menu bar, then double-click
+the same `.command` file again. For distribution
 to other Macs, the app and extension need Developer ID signing and notarization.
 
-On first launch, enter a GitHub token and either a Teamwork API key or OAuth access token, then
-choose **Save credentials**. Credentials are stored in the macOS Keychain. Choose **Edit** to show
-the fields again. Paste a Teamwork task URL, choose an **Operation**, then choose **Create GitHub
-issue**; this creates a live GitHub issue. **Automatic** analyzes the task as usual. Choose Reload,
-Replace blob, Rename, Delete, or Reload and delete to force the matching operation, as with the
-terminal `--operation` option. The Teamwork task still needs the IDs and filenames required by that
-operation. Use **Template documentation** to open a separate window showing the supported templates
-and their placeholders. The app reads optional settings such as Oracle lookup and Qwen configuration
-from the repository's `.env` file. Oracle Instant Client setup is still required for the AIMSPRD
-operations that use Thick mode; see [Oracle Instant Client requirement](#oracle-instant-client-requirement).
+### Generate and publish requests
 
-To add the widget, open the macOS widget gallery and add **SQL Pasuyo**. It launches the menu bar
-app for credential setup and task submission. Choose **Quit SQL Pasuyo** in the app popover to exit.
-After an issue is created, the popover shows a success confirmation and a
-clickable GitHub issue link.
+1. Open **Credentials**, select **API key** or **OAuth token**, and enter your Teamwork credential.
+   Enter a GitHub token if you intend to publish issues. Choose **Save credentials** to store them
+   in macOS Keychain.
+2. Paste one or more Objectbright Teamwork task URLs, separated by spaces or new lines. Choose
+   **Generate previews**. **Automatic** reads each task's description and fields to choose the
+   template. Choosing another **Operation** applies it to the whole batch. Repeated task links are
+   processed once, and input or lookup errors appear on the affected rows.
+3. Select a result in the **Tasks** list. Switch between **Request text** and **GitHub issue body**
+   in the preview pane. Choose **Copy request**
+   to copy the generated template text. Generation only reads task data and performs the usual
+   lookups.
+4. Choose **Create GitHub issue** on a reviewed result to publish that issue and apply the Teamwork
+   tags. The result shows the issue link and any tagging error. If issue creation cannot be
+   confirmed, check GitHub for an existing issue before retrying.
+
+Use **Template documentation** to see the supported templates and their placeholders. The app reads
+Oracle and Qwen settings from the checkout's `.env`. AIMSPRD lookups that use Thick mode still
+require [Oracle Instant Client](#oracle-instant-client-requirement).
+
+### Add the widget
+
+After installing and opening the app, right-click the desktop and choose **Edit Widgets**, or open
+**Edit Widgets** in Notification Center. Search for **SQL Pasuyo** and add a small or medium widget.
+Click it to open the workspace. You can also use **Open SQL Pasuyo** from the menu bar icon.
+Press **Option–Command–P** from any app to open the workspace while SQL Pasuyo is running in the
+menu bar, even if the workspace window is closed.
 
 ## How To Use It
 

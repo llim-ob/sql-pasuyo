@@ -9,10 +9,17 @@ if ! command -v xcodebuild >/dev/null 2>&1; then
 fi
 
 developer_dir="$(xcode-select -p 2>/dev/null || true)"
+if [[ -n "${DEVELOPER_DIR:-}" ]]; then
+  developer_dir="$DEVELOPER_DIR"
+elif [[ -z "$developer_dir" || "$developer_dir" == *"/CommandLineTools" ]] &&
+     [[ -d /Applications/Xcode.app/Contents/Developer ]]; then
+  developer_dir=/Applications/Xcode.app/Contents/Developer
+fi
 if [[ -z "$developer_dir" || "$developer_dir" == *"/CommandLineTools" ]]; then
   echo "Full Xcode is required. Select it in Xcode > Settings > Locations, then run this installer again." >&2
   exit 1
 fi
+export DEVELOPER_DIR="$developer_dir"
 
 brew_command="$(command -v brew || true)"
 if [[ -z "$brew_command" && -x /opt/homebrew/bin/brew ]]; then
@@ -24,14 +31,6 @@ fi
 if [[ -n "$brew_command" ]]; then
   brew_prefix="$("$brew_command" --prefix)"
   export PATH="$brew_prefix/bin:$brew_prefix/sbin:$PATH"
-fi
-
-if ! command -v xcodegen >/dev/null 2>&1; then
-  if [[ -z "$brew_command" ]]; then
-    echo "Homebrew is required to install XcodeGen. Install Homebrew, then run this installer again." >&2
-    exit 1
-  fi
-  "$brew_command" install xcodegen
 fi
 
 if ! command -v python3 >/dev/null 2>&1; then
@@ -48,7 +47,6 @@ if [[ ! -x .venv/bin/python ]]; then
 fi
 ./.venv/bin/python -m pip install -r requirements.txt
 
-xcodegen generate --spec macOSWidget/project.yml
 xcodebuild -project macOSWidget/SQLPasuyo.xcodeproj \
   -scheme SQLPasuyo -configuration Release \
   -derivedDataPath build build
