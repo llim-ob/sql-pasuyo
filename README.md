@@ -44,9 +44,9 @@ to other Macs, the app and extension need Developer ID signing and notarization.
    Enter a GitHub token if you intend to publish issues. Choose **Save credentials** to store them
    in macOS Keychain.
 2. Paste one or more Objectbright Teamwork task URLs, separated by spaces or new lines. Choose
-   **Generate previews**. **Automatic** reads each task's description and fields to choose the
-   template. Choosing another **Operation** applies it to the whole batch. Repeated task links are
-   processed once, and input or lookup errors appear on the affected rows.
+   **Generate previews** or press **Command–Return**. **Automatic** reads each task's description
+   and fields to choose the template. Choosing another **Operation** applies it to the whole batch.
+   Repeated task links are processed once, and input or lookup errors appear on the affected rows.
 3. Select a result in the **Tasks** list. Switch between **Request text** and **GitHub issue body**
    in the preview pane. Choose **Copy request**
    to copy the generated template text. Generation only reads task data and performs the usual
@@ -63,9 +63,9 @@ require [Oracle Instant Client](#oracle-instant-client-requirement).
 
 After installing and opening the app, right-click the desktop and choose **Edit Widgets**, or open
 **Edit Widgets** in Notification Center. Search for **SQL Pasuyo** and add a small or medium widget.
-Click it to open the workspace. You can also use **Open SQL Pasuyo** from the menu bar icon.
-Press **Option–Command–P** from any app to open the workspace while SQL Pasuyo is running in the
-menu bar, even if the workspace window is closed.
+Click it to open the workspace. The workspace header and **Open SQL Pasuyo** menu item show
+**⌥⌘P** (Option–Command–P). Use it from any app while SQL Pasuyo is running in the menu bar,
+even if the workspace window is closed. The **Generate previews** button shows **⌘↩**.
 
 ## How To Use It
 

@@ -18,7 +18,7 @@ struct SQLPasuyoApp: App {
         .handlesExternalEvents(matching: ["submit"])
 
         MenuBarExtra("SQL Pasuyo", systemImage: "doc.text") {
-            Button("Open SQL Pasuyo") { showWorkspace() }
+            Button("Open SQL Pasuyo   ⌥⌘P") { showWorkspace() }
                 .keyboardShortcut("o")
             Button("Template documentation") {
                 openWindow(id: "template-guide")

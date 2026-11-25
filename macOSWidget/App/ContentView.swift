@@ -77,6 +77,16 @@ struct ContentView: View {
                     Text("Paste one or more Teamwork links, separated by spaces or new lines.")
                         .foregroundStyle(.secondary)
                 }
+                Spacer(minLength: 8)
+                HStack(spacing: 6) {
+                    Text("Open from any app").foregroundStyle(.secondary)
+                    shortcutBadge("⌥⌘P")
+                }
+                .font(.caption)
+                .fixedSize()
+                .help("Option–Command–P opens SQL Pasuyo while it is running in the menu bar.")
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Open from any app, Option–Command–P")
             }
 
             ZStack(alignment: .topLeading) {
@@ -122,17 +132,31 @@ struct ContentView: View {
                 Button {
                     model.generate()
                 } label: {
-                    Label(model.isGenerating ? "Generating…" : "Generate previews",
-                          systemImage: "arrow.right")
+                    HStack(spacing: 7) {
+                        Label(model.isGenerating ? "Generating…" : "Generate previews",
+                              systemImage: "arrow.right")
+                        shortcutBadge("⌘↩")
+                            .accessibilityHidden(true)
+                    }
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(accent)
+                .keyboardShortcut(.return, modifiers: .command)
+                .help("Generate previews (Command–Return)")
                 .disabled(!model.canGenerate)
             }
         }
         .padding(16)
         .background(panel, in: .rect(cornerRadius: 14))
         .overlay { RoundedRectangle(cornerRadius: 14).strokeBorder(.separator.opacity(0.6)).allowsHitTesting(false) }
+    }
+
+    private func shortcutBadge(_ keys: String) -> some View {
+        Text(keys)
+            .font(.caption.monospaced().weight(.semibold))
+            .padding(.horizontal, 5)
+            .padding(.vertical, 2)
+            .background(.primary.opacity(0.12), in: .rect(cornerRadius: 4))
     }
 
     private var emptyWorkspace: some View {
